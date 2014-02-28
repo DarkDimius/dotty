@@ -7,10 +7,8 @@ import core._
 import Phases._
 import Contexts._
 import Symbols._
-import parsing.Parsers.Parser
-import config.Printers._
-import dotty.tools.dotc.core.SymDenotations.SymDenotation
-import dotty.tools.dotc.core.Names.TermName
+import Decorators._
+import dotty.tools.dotc.ast.untpd
 
 /** Corresponds to lazyvals phase of scala2 */
 class LocalLazyVals extends Phase {
@@ -24,255 +22,190 @@ class LocalLazyVals extends Phase {
     """Rewrites local lazy vals to classes with lazy field"""
 
   override def run(implicit ctx: Context): Unit = {
-    val transformer = new LocalLazyValsRewriter
+    val transformer = new LazyValsRewriter
     val oldTree = ctx.compilationUnit.tpdTree
-    val newTree = transformer.transform(oldTree)
-//    println("Tree after " + name)
-    println(newTree.show)
-//    println("raw repr is \n" + newTree)
-    ctx.compilationUnit.tpdTree = newTree
+    val lazyValsRewritten = transformer.transform(transformer.transform(oldTree)) // applying twice required due to rewriting all references to rewritten def
+
+    println(s"Tree after $name is ${lazyValsRewritten.show}")
+    println(s"raw representation is $lazyValsRewritten ")
+    ctx.compilationUnit.tpdTree = lazyValsRewritten
   }
 
-  class LocalLazyValsRewriter extends tpd.TreeTransformer {
+  class LazyValsRewriter extends tpd.TreeTransformer {
+
+    private val localLazyValsRewritten = mutable.Map.empty[Symbol, Symbol] // this map is per-compilation-unit-per-phase
+    private val classLazyValsRewritten = mutable.Map.empty[Symbol, Symbol] // this map is per-compilation-unit-per-phase
+
+    /** Perform the following transformations:
+      * - for a lazy val inside a method, replace it with a LazyHolder from
+      * dotty.runtime(eg dotty.runtime.LazyInt)
+      * - rewrite references to local lazy vals to field access of LazyHolder
+      */
+    override def transform(tree: tpd.Tree)(implicit ctx: Context): tpd.Tree = {
+      def transformLocalValDef(x: tpd.ValDef) = x match {
+        case x@ValDef(mods, name, tpt, rhs) =>
+          val valueInitter = transform(rhs)
+          val holderName = ctx.freshName(name.toString + StdNames.nme.LAZY_LOCAL).toTermName
+          val tpe = x.tpe.widen
+
+          val holderImpl =
+            if (tpe == defn.IntType) ctx.requiredClass("dotty.runtime.LazyInt")
+            else if (tpe == defn.LongType) ctx.requiredClass("dotty.runtime.LazyLong")
+            else if (tpe == defn.BooleanType) ctx.requiredClass("dotty.runtime.LazyBoolean")
+            else if (tpe == defn.FloatType) ctx.requiredClass("dotty.runtime.LazyFloat")
+            else if (tpe == defn.DoubleType) ctx.requiredClass("dotty.runtime.LazyDouble")
+            else if (tpe == defn.ByteType) ctx.requiredClass("dotty.runtime.LazyByte")
+            else if (tpe == defn.CharType) ctx.requiredClass("dotty.runtime.LazyChar")
+            else if (tpe == defn.ShortType) ctx.requiredClass("dotty.runtime.LazyShort")
+            else ctx.requiredClass("dotty.runtime.LazyRef")
+
+          val holderSymbol = ctx.newSymbol(x.symbol.owner, holderName, Flags.EmptyFlags, holderImpl.typeRef, coord = x.symbol.coord)
+          // todo: is holderSymbol.pos = expr.pos required, or is cord update enough?
+          val holderTree = tpd.ValDef(holderSymbol, tpd.New(holderImpl.typeRef, List(valueInitter)))
+          localLazyValsRewritten += (x.symbol -> holderSymbol)
+          //          ctx.debuglog(s"found a lazy val ${x.show},\n rewrote with ${holderTree.show}")
+          holderTree
+        // todo: is there a need\way to invalidate old symbol?
+      }
+      // todo: this implementation is not thread safe
+      def mkSlowPathDef(methodSymbol:Symbol, target: Symbol, flag: Symbol, rhs: tpd.Tree) = {
+        val cond = tpd.Ident(flag.termRef)
+        val exp = tpd.Ident(target.termRef)
+        val setFlag = tpd.Assign(cond, tpd.Literal(Constants.Constant(true)))
+        val setTarget = tpd.Assign(exp, rhs)
+        val elsep = tpd.Block(List(setFlag, setTarget), exp)
+        tpd.If(cond, exp, elsep)
+      }
+
+      def mkDef(methodSymbol: TermSymbol, claz:ClassSymbol, target: Symbol, rhs:tpd.Tree, tp:Types.Type, getFlag:Symbol, casFlag:Symbol, setFlagState:Symbol, waitOnLock: Symbol) = {
+
+        val initState = tpd.Literal(Constants.Constant(0))
+        val computeState = tpd.Literal(Constants.Constant(1))
+        val notifyState = tpd.Literal(Constants.Constant(2))
+        val computedState = tpd.Literal(Constants.Constant(3))
+        val thiz = tpd.This(claz)
+
+        val resultSymbol = ctx.newSymbol(methodSymbol, "result".toTermName, Flags.Mutable, tp)
+        val resultDef = tpd.ValDef(resultSymbol)
+
+        val setFlagSymbol = ctx.newSymbol(methodSymbol, "retry".toTermName, Flags.Mutable, defn.BooleanType)
+        val setFlagDef = tpd.ValDef(resultSymbol, tpd.Literal(Constants.Constant(true)))
+
+        val whileCond = tpd.Ident(setFlagSymbol.termRef)
+
+        val compute = {
 
 
+          // val eSymbol = ctx.newSymbol(methodSymbol, "e".toTermName, Flags.EmptyFlags, defn.ThrowableType)
+          // val pattern = tpd.Bind(eSymbol, )
+          // val failed =tpd.CaseDef()
+          // TRY
+          val compute = tpd.Assign(tpd.Ident(resultSymbol.termRef), rhs)
+          val assign = tpd.Assign(tpd.Ident(target.termRef), tpd.Ident(resultSymbol.termRef))
+          val complete = tpd.Apply(tpd.Ident(setFlagState.termRef), List(thiz, computedState))
+          val noRetry = tpd.Assign(tpd.Ident(setFlagSymbol.termRef), tpd.Literal(Constants.Constant(false)))
+          val body = tpd.If(tpd.Apply(tpd.Ident(casFlag.termRef), List(thiz, initState, computeState)),
+            tpd.Block(compute::complete::noRetry::assign::Nil, tpd.EmptyTree), // todo:return Unit?
+            tpd.EmptyTree)
 
-
-    private val lazyValsRewrite = mutable.Map.empty[Symbol, Symbol]
-
-    override def transform(tree: tpd.Tree)(implicit ctx: Context) : tpd.Tree = {
-      tree
-    }
-    /*
-    override def transform(tree: tpd.Tree)(implicit ctx: Context) : tpd.Tree = {
-      val sym = tree.symbol
-
-      tree match {
-
-        case Block(_, _) =>
-          val block1 = super.transform(tree)
-          val Block(stats, expr) = block1
-          val stats1 = stats.flatMap {
-            case Block(List(d1@DefDef(_, n1, _, _, _, _)), d2@DefDef(_, n2, _, _, _, _)) if StdNames.nme.newLazyValSlowComputeName(n2) == n1 =>
-              List(d1, d2)
-            case stat =>
-              List(stat)
-          }
-          cpy.Block(block1, stats1, expr)
-
-        case DefDef(_, _, _, _, _, rhs) => //atOwner(tree.symbol) {
-          val (res, slowPathDef) = if (!sym.owner.isClass && (sym is Flags.Lazy)) {
-            val enclosingClassOrDummyOrMethod = {
-              val enclMethod = sym
-
-              if (enclMethod != NoSymbol ) {
-                val enclClass = sym.asSymDenotation.enclosingClass // a:effectiveEnclosingClass
-                if (enclClass != NoSymbol && enclMethod == enclClass.enclMethod)
-                  enclClass
-                else
-                  enclMethod
-              } else
-                sym.owner
-            }
-            debuglog(s"determined enclosing class/dummy/method for lazy val as $enclosingClassOrDummyOrMethod given symbol $sym")
-            val idx = lazyVals(enclosingClassOrDummyOrMethod)
-            lazyVals(enclosingClassOrDummyOrMethod) = idx + 1
-            val (rhs1, sDef) = mkLazyDef(enclosingClassOrDummyOrMethod, transform(rhs), idx, sym)
-            sym.resetFlag((if (lazyUnit(sym)) 0 else LAZY) | ACCESSOR)
-            (rhs1, sDef)
-          } else
-            (transform(rhs), EmptyTree)
-
-          val ddef1 = deriveDefDef(tree)(_ => if (LocalLazyValFinder.find(res)) typed(addBitmapDefs(sym, res)) else res)
-          if (slowPathDef != EmptyTree) Block(slowPathDef, ddef1) else ddef1
-        //}
-
-        case Template(_, _, body) => atOwner(currentOwner) {
-          val body1 = super.transformTrees(body)
-          var added = false
-          val stats =
-            for (stat <- body1) yield stat match {
-              case Block(_, _) | Apply(_, _) | If(_, _, _) | Try(_, _, _) if !added =>
-                // Avoid adding bitmaps when they are fully overshadowed by those
-                // that are added inside loops
-                if (LocalLazyValFinder.find(stat)) {
-                  added = true
-                  typed(addBitmapDefs(sym, stat))
-                } else stat
-              case ValDef(_, _, _, _) =>
-                typed(deriveValDef(stat)(addBitmapDefs(stat.symbol, _)))
-              case _ =>
-                stat
-            }
-          val innerClassBitmaps = if (!added && currentOwner.isClass && bitmaps.contains(currentOwner)) {
-              // add bitmap to inner class if necessary
-                val toAdd0 = bitmaps(currentOwner).map(s => typed(ValDef(s, ZERO)))
-                toAdd0.foreach(t => {
-                    if (currentOwner.info.decl(t.symbol.name) == NoSymbol) {
-                      t.symbol.setFlag(PROTECTED)
-                      currentOwner.info.decls.enter(t.symbol)
-                    }
-                })
-                toAdd0
-            } else List()
-          deriveTemplate(tree)(_ => innerClassBitmaps ++ stats)
+          tpd.CaseDef(initState, tpd.EmptyTree, body)
         }
 
-        case ValDef(_, _, _, _) if !sym.owner.isModule && !sym.owner.isClass =>
-          deriveValDef(tree) { rhs0 =>
-            val rhs = transform(rhs0)
-            if (LocalLazyValFinder.find(rhs)) typed(addBitmapDefs(sym, rhs)) else rhs
+        val waitFirst = {
+          val wait = tpd.Apply(tpd.Ident(waitOnLock.termRef), List(thiz, computeState))
+          tpd.CaseDef(computeState, tpd.EmptyTree, wait)
+        }
+
+        val waitSecond = {
+          val wait = tpd.Apply(tpd.Ident(waitOnLock.termRef), List(thiz, notifyState))
+          tpd.CaseDef(notifyState, tpd.EmptyTree, wait)
+        }
+
+        val computed = {
+          val noRetry = tpd.Assign(tpd.Ident(setFlagSymbol.termRef), tpd.Literal(Constants.Constant(false)))
+          val result = tpd.Assign(tpd.Ident(resultSymbol.termRef), tpd.Ident(target.termRef))
+          val body = tpd.Block(noRetry::result::Nil, tpd.EmptyTree) // todo:return Unit?
+          tpd.CaseDef(notifyState, tpd.EmptyTree, body)
+        }
+
+
+
+        val cases = tpd.Match(tpd.Apply(tpd.Ident(getFlag.termRef), List(thiz)), List(compute, waitFirst, waitSecond, computed)) //todo: annotate with @switch
+
+        val cycle = untpd.WhileDo(whileCond, cases).withTypeUnchecked(defn.UnitType)
+
+        tpd.DefDef(methodSymbol, tpd.Block(resultDef::setFlagDef::cycle::Nil, tpd.Ident(resultSymbol.termRef)))
+      }
+
+      def transformIdent(expr: tpd.Ident) = {
+        val rewr1 = localLazyValsRewritten.get(expr.symbol) match {
+          case Some(newSymbol) =>
+            val ident = tpd.Ident(newSymbol.termRef)
+            tpd.Select(ident, "value".toTermName)
+          case None => expr
+        }
+        val rewr2 = classLazyValsRewritten.get(rewr1.symbol) match {
+          case Some(newSymbol) =>
+            val ident = tpd.Ident(newSymbol.termRef)
+            tpd.Apply(ident, Nil)
+          case None => expr
+        }
+        rewr2
+      }
+
+      tree match {
+        case Block(stats, expr) =>
+          val newStats = stats.mapConserve {
+            case t@ValDef(mods, _, _, _) if (mods is Flags.Lazy) =>
+              transformLocalValDef(t)
+            case t: tpd.Ident =>
+              transformIdent(t)
+            case expr => super.transform(expr)
           }
+          val newExpr = transform(expr)
+          if ((newExpr eq expr) && (newStats eq stats)) tree
+          else tpd.Block(newStats, newExpr)
+        case TypeDef(mods, name, rhs) if tree.symbol.isClass =>
+          val template = rhs.asInstanceOf[tpd.Template]
+          val body = template.body
+          // todo: also take care of lazy vals defined in parents
+          val lazyValsCount = body.count {
+            case ValDef(mods, _, _, _) if mods is Flags.Lazy => true
+            case _ => false
+          }
+          if (lazyValsCount == 0) super.transform(tree)
+          else {
+            var ord = 0
+            val newBody = body.flatMap {
+              case x@ValDef(mods, name, tpt, orhs) if (mods is Flags.Lazy) =>
+                val rhs = transform(orhs)
+                val tpe = x.tpe.widen
+                assert(!(mods is Flags.Mutable))
+                val containerName = ctx.freshName(name.toString + StdNames.nme.LAZY_LOCAL).toTermName
+                val containerSymbol = ctx.newSymbol(x.symbol.owner, containerName, (mods &~ Flags.Lazy).flags, tpe, coord = x.symbol.coord)
+                // todo: is holderSymbol.pos = expr.pos required, or is cord update enough?
+                val containerTree = tpd.ValDef(containerSymbol, tpd.Literal(Constants.Constant(0))) //todo: tpd.Ident(_)?
+                val flagName = ctx.freshName(name.toString + StdNames.nme.BITMAP_PREFIX).toTermName
+                val flagSymbol = ctx.newSymbol(x.symbol.owner, flagName, Flags.EmptyFlags, defn.BooleanType)
+                val flag = tpd.ValDef(flagSymbol, tpd.Literal(Constants.Constant(false)))
+                val slowPathName = name
+                val slowPathSymbol = ctx.newSymbol(x.symbol.owner, slowPathName, Flags.EmptyFlags, tpe)
+                val slowPath = tpd.DefDef(slowPathSymbol, mkSlowPathDef(slowPathSymbol, containerSymbol, flagSymbol, rhs))
+                classLazyValsRewritten += (x.symbol -> slowPathSymbol)
+                ord += 1
+                List(containerTree, flag, slowPath)
+              case x => List(transform(x))
+            }
 
-        case l@LabelDef(name0, params0, ifp0@If(_, _, _)) if name0.startsWith(nme.WHILE_PREFIX) =>
-          val ifp1 = super.transform(ifp0)
-          val If(cond0, thenp0, elsep0) = ifp1
-
-          if (LocalLazyValFinder.find(thenp0))
-            deriveLabelDef(l)(_ => cpy.If(ifp1, cond0, typed(addBitmapDefs(sym.owner, thenp0)), elsep0))
-          else
-            l
-
-        case l@LabelDef(name0, params0, block@Block(stats0, expr))
-          if name0.startsWith(nme.WHILE_PREFIX) || name0.startsWith(nme.DO_WHILE_PREFIX) =>
-          val stats1 = super.transformTrees(stats0)
-          if (LocalLazyValFinder.find(stats1))
-            deriveLabelDef(l)(_ => cpy.Block(block, typed(addBitmapDefs(sym.owner, stats1.head))::stats1.tail, expr))
-          else
-            l
-
+            super.transform(tpd.ClassDef(tree.symbol.asClass, template.constr, newBody))
+          }
+        case t: tpd.Ident =>
+          transformIdent(t)
         case _ => super.transform(tree)
       }
     }
-
-
   }
 
-  /** Add the bitmap definitions to the rhs of a method definition.
-    *  If the rhs has been tail-call transformed, insert the bitmap
-    *  definitions inside the top-level label definition, so that each
-    *  iteration has the lazy values un-initialized. Otherwise add them
-    *  at the very beginning of the method.
-    */
-  private def addBitmapDefs(methSym: Symbol, rhs: Tree): Tree = {
-    def prependStats(stats: List[Tree], tree: Tree): Block = tree match {
-      case Block(stats1, res) => Block(stats ::: stats1, res)
-      case _ => Block(stats, tree)
-    }
-
-    val bmps = bitmaps(methSym) map (ValDef(_, ZERO))
-
-    def isMatch(params: List[Ident]) = (params.tail corresponds methSym.tpe.params)(_.tpe == _.tpe)
-
-    if (bmps.isEmpty) rhs else rhs match {
-      case Block(assign, l @ LabelDef(name, params, _))
-        if (name string_== "_" + methSym.name) && isMatch(params) =>
-        Block(assign, deriveLabelDef(l)(rhs => typed(prependStats(bmps, rhs))))
-
-      case _ => prependStats(bmps, rhs)
-    }
-  }
-
-  def mkSlowPathDef(clazz: Symbol, lzyVal: Symbol, cond: Tree, syncBody: List[Tree],
-                    stats: List[Tree], retVal: Tree): Tree = {
-    val defSym = clazz.newMethod(nme.newLazyValSlowComputeName(lzyVal.name.toTermName), lzyVal.pos, STABLE | PRIVATE)
-    defSym setInfo MethodType(List(), lzyVal.tpe.resultType)
-    defSym.owner = lzyVal.owner
-    debuglog(s"crete slow compute path $defSym with owner ${defSym.owner} for lazy val $lzyVal")
-    if (bitmaps.contains(lzyVal))
-      bitmaps(lzyVal).map(_.owner = defSym)
-    val rhs: Tree = (gen.mkSynchronizedCheck(clazz, cond, syncBody, stats)).changeOwner(currentOwner -> defSym)
-
-    DefDef(defSym, addBitmapDefs(lzyVal, BLOCK(rhs, retVal)))
-  }
-
-
-  def mkFastPathBody(clazz: Symbol, lzyVal: Symbol, cond: Tree, syncBody: List[Tree],
-                     stats: List[Tree], retVal: Tree): (Tree, Tree) = {
-    val slowPathDef: Tree = mkSlowPathDef(clazz, lzyVal, cond, syncBody, stats, retVal)
-    (If(cond, Apply(Ident(slowPathDef.symbol), Nil), retVal), slowPathDef)
-  }
-
-  /** return a 'lazified' version of rhs. Rhs should conform to the
-    *  following schema:
-    *  {
-    *    l$ = <rhs>
-    *    l$
-    *  } or
-    *  <rhs> when the lazy value has type Unit (for which there is no field
-    *  to cache it's value.
-    *
-    *  Similarly as for normal lazy val members (see Mixin), the result will be a tree of the form
-    *  { if ((bitmap&n & MASK) == 0) this.l$compute()
-    *    else l$
-    *
-    *    def l$compute() = { synchronized(enclosing_class_or_dummy) {
-    *      if ((bitmap$n & MASK) == 0) {
-    *       l$ = <rhs>
-    *       bitmap$n = bimap$n | MASK
-    *      }}
-    *      l$
-    *    }
-    *  }
-    *  where bitmap$n is a byte value acting as a bitmap of initialized values. It is
-    *  the 'n' is (offset / 8), the MASK is (1 << (offset % 8)). If the value has type
-    *  unit, no field is used to cache the value, so the l$compute will now look as following:
-    *  {
-    *    def l$compute() = { synchronized(enclosing_class_or_dummy) {
-    *      if ((bitmap$n & MASK) == 0) {
-    *       <rhs>;
-    *       bitmap$n = bimap$n | MASK
-    *      }}
-    *    ()
-    *    }
-    *  }
-    */
-  private def mkLazyDef(methOrClass: Symbol, tree: Tree, offset: Int, lazyVal: Symbol): (Tree, Tree) = {
-    val bitmapSym           = getBitmapFor(methOrClass, offset)
-    val mask                = LIT(1 << (offset % FLAGS_PER_BYTE))
-    val bitmapRef = if (methOrClass.isClass) Select(This(methOrClass), bitmapSym) else Ident(bitmapSym)
-
-    def mkBlock(stmt: Tree) = BLOCK(stmt, mkSetFlag(bitmapSym, mask, bitmapRef), UNIT)
-
-    debuglog(s"create complete lazy def in $methOrClass for $lazyVal")
-    val (block, res) = tree match {
-      case Block(List(assignment), res) if !lazyUnit(lazyVal) =>
-        (mkBlock(assignment),  res)
-      case rhs                          =>
-        (mkBlock(rhs),         UNIT)
-    }
-
-    val cond = (bitmapRef GEN_& (mask, bitmapKind)) GEN_== (ZERO, bitmapKind)
-    val lazyDefs = mkFastPathBody(methOrClass.enclClass, lazyVal, cond, List(block), Nil, res)
-    (atPos(tree.pos)(localTyper.typed {lazyDefs._1 }), atPos(tree.pos)(localTyper.typed {lazyDefs._2 }))
-  }
-
-  private def mkSetFlag(bmp: Symbol, mask: Tree, bmpRef: Tree): Tree =
-    bmpRef === (bmpRef GEN_| (mask, bitmapKind))
-
-  val bitmaps = mutable.Map[Symbol, List[Symbol]]() withDefaultValue Nil
-
-  /** Return the symbol corresponding of the right bitmap int inside meth,
-    *  given offset.
-    */
-  private def getBitmapFor(meth: Symbol, offset: Int): Symbol = {
-    val n = offset / FLAGS_PER_BYTE
-    val bmps = bitmaps(meth)
-    if (bmps.length > n)
-      bmps(n)
-    else {
-      val sym = meth.newVariable(nme.newBitmapName(nme.BITMAP_NORMAL, n), meth.pos).setInfo(ByteTpe)
-      enteringTyper {
-        sym addAnnotation VolatileAttr
-      }
-
-      bitmaps(meth) = (sym :: bmps).reverse
-      sym
-    }
-  }
-  */
-
-  }
 
 }
 

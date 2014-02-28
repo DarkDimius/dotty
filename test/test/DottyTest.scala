@@ -8,6 +8,9 @@ import Types._, Symbols._, Decorators._
 import dotty.tools.dotc.printing.Texts._
 import dotty.tools.dotc.reporting.ConsoleReporter
 import dotty.tools.dotc.core.Decorators._
+import dotty.tools.dotc.ast.tpd
+import dotty.tools.dotc.Compiler
+import dotty.tools.dotc.core.Phases.Phase
 
 class DottyTest {
 
@@ -22,15 +25,35 @@ class DottyTest {
 //      .withSetting(debugTrace, true)
 //      .withSetting(prompt, true)
       .withSetting(Ylogcp, true)
-      .withSetting(printtypes, true)
+//      .withSetting(printtypes, true)
       .withSetting(pageWidth, 90)
-      .withSetting(log, List("<some"))
+ //     .withSetting(log, List("<some"))
  //   .withTyperState(new TyperState(new ConsoleReporter()(base.initialCtx)))
 
 //      .withSetting(uniqid, true)
     println(ctx.settings)
     base.definitions.init(ctx)
     ctx
+  }
+
+  def checkCompile(checkAfterPhase: String,fileNames:List[String])(assertion:tpd.Tree =>Unit): Unit = {
+    val c = new Compiler {
+      override def phases = {
+        val allPhases = super.phases
+        val targetPhase = allPhases.find{p=> p.name == checkAfterPhase}
+        assert(targetPhase isDefined)
+        val phasesBefore = allPhases.takeWhile(x=> ! (x eq targetPhase.get))
+
+        val checker = new Phase{
+          def name = "hijackTree"
+          override def run(implicit ctx: Context): Unit = assertion(ctx.compilationUnit.tpdTree)
+        }
+        phasesBefore:::List(targetPhase.get, checker)
+      }
+    }
+    c.rootContext(ctx)
+    val run = c.newRun
+    run.compile(fileNames)
   }
 
   def methType(names: String*)(paramTypes: Type*)(resultType: Type = defn.UnitType) =
