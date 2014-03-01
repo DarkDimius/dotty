@@ -10,7 +10,7 @@ object Printers {
     override def println(msg: => String): Unit = ()
   }
 
-  val default: Printer = new Printer
+  val default: Printer = noPrinter
   val core: Printer = noPrinter
   val typr: Printer = noPrinter
   val constr: Printer = noPrinter

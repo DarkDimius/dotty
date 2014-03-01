@@ -7,7 +7,7 @@ import util.SimpleMap
 import collection.mutable
 import printing.{Printer, Showable}
 import printing.Texts._
-import config.Config
+import dotty.tools.dotc.config.{Printers, Config}
 
 /** Constraint over undetermined type parameters
  *  @param myMap a map from PolyType to arrays.
@@ -298,6 +298,6 @@ trait ConstraintRunInfo { self: RunInfo =>
       maxSize = c.myMap.size
       maxConstraint = c
     }
-  def printMaxConstraint()(implicit ctx: Context) =
-    if (maxSize > 0) println(s"max constraint = ${maxConstraint.show}")
+  def printMaxConstraint()(implicit ctx: Context) = ()
+    Printers.constr.println(s"max constraint = ${maxConstraint.show}")
 }
