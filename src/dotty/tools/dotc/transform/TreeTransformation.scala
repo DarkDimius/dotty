@@ -253,7 +253,7 @@ abstract class TreeTransformerPhase extends Phase {
                   transform(fun.asInstanceOf[tpd.Tree], transformationsLeft),
                   transformL(implicits.asInstanceOf[List[tpd.Tree]], transformationsLeft),
                   transformL(patterns.asInstanceOf[List[tpd.Tree]], transformationsLeft))
-              case ValDef(mods, name, tpt, rhs) =>
+              case ValDef(mods, name, tpt, rhs) if !tree.isEmpty => // As a result of discussing with Martin :emptyValDefs shouldn't be copied
                 cur.transformValDef(tree.asInstanceOf[ValDef],
                   mods.asInstanceOf[tpd.Modifiers],
                   name,
@@ -299,6 +299,7 @@ abstract class TreeTransformerPhase extends Phase {
                     tree1
                 }
               case EmptyTree => EmptyTree
+              case _ => tree
             }
 
             transformationsLeft = transformationsLeft.tail

@@ -39,6 +39,7 @@ object DottyBuild extends Build {
     mainClass in (Compile, run) := Some("dotty.tools.dotc.Main"),
     fork in run := true,
     fork in Test := true,
+    parallelExecution in Test := false,
 
     // enable verbose printing of exceptions during junit tests
     testOptions += Tests.Argument(TestFrameworks.JUnit, "-a"),

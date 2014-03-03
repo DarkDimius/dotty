@@ -685,7 +685,7 @@ object Trees {
     extends ValOrDefDef[T] {
     type ThisTree[-T >: Untyped] = ValDef[T]
     def withName(name: Name)(implicit ctx: Context): untpd.ValDef = untpd.cpy.ValDef(this, mods, name.toTermName, tpt, rhs)
-    assert(isEmpty || tpt != genericEmptyTree)
+    assert(isEmpty || tpt != genericEmptyTree, s"$tpt, $genericEmptyTree")
   }
 
   /** mods def name[tparams](vparams_1)...(vparams_n): tpt = rhs */
