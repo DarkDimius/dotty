@@ -96,7 +96,7 @@ object Types {
         else thissym eq sym
       case this1: RefinedType =>
         // make sure all refinements are type arguments
-        this1.parent.isRef(sym) && this.typeArgs.nonEmpty
+        this1.parent.isRef(sym) && this.argInfos.nonEmpty
       case _ =>
         false
     }
@@ -986,7 +986,7 @@ object Types {
     val prefix: Type
     val name: Name
 
-    assert(prefix.isValueType || (prefix eq NoPrefix))
+    assert(prefix.isValueType || (prefix eq NoPrefix), s"invalid prefix $prefix")
 
     private[this] var lastDenotation: Denotation = _
     private[this] var lastSymbol: Symbol = _

@@ -23,16 +23,16 @@ class DottyTest {
     import base.settings._
     val ctx = base.initialCtx.fresh
       .withSetting(verbose, true)
-//      .withSetting(debug, true)
-//      .withSetting(debugTrace, true)
-//      .withSetting(prompt, true)
+      //      .withSetting(debug, true)
+      //      .withSetting(debugTrace, true)
+      //      .withSetting(prompt, true)
       .withSetting(Ylogcp, true)
       .withSetting(printtypes, true)
       .withSetting(pageWidth, 90)
       .withSetting(log, List("<some"))
- //   .withTyperState(new TyperState(new ConsoleReporter()(base.initialCtx)))
+    //   .withTyperState(new TyperState(new ConsoleReporter()(base.initialCtx)))
 
-//      .withSetting(uniqid, true)
+    //      .withSetting(uniqid, true)
     println(ctx.settings)
     base.definitions.init(ctx)
     ctx
