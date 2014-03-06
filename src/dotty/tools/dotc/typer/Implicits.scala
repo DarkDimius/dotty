@@ -76,7 +76,7 @@ object Implicits {
 
         def discard = pt match {
           case pt: ViewProto => discardForView(ref.widen, pt.argType)
-          case _: ValueType => !defn.isFunctionType(pt) && discardForValueType(ref.widen)
+          case _: ValueTypeOrProto => !defn.isFunctionType(pt) && discardForValueType(ref.widen)
           case _ => false
         }
 
@@ -269,7 +269,7 @@ trait ImplicitRunInfo { self: RunInfo =>
      *  abstract types are eliminated.
      */
     object liftToClasses extends TypeMap {
-      private implicit val ctx: Context = liftingCtx
+      override implicit protected val ctx: Context = liftingCtx
       override def stopAtStatic = true
       def apply(tp: Type) = tp match {
         case tp: TypeRef if tp.symbol.isAbstractOrAliasType =>
@@ -347,6 +347,8 @@ trait ImplicitRunInfo { self: RunInfo =>
   val useCount = new mutable.HashMap[TermRef, Int] {
     override def default(key: TermRef) = 0
   }
+
+  def clear() = implicitScopeCache.clear()
 }
 
 /** The implicit resolution part of type checking */

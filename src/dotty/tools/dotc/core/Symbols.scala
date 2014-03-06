@@ -355,8 +355,8 @@ object Symbols {
     final def isType(implicit ctx: Context): Boolean = denot.isType
     final def isClass: Boolean = isInstanceOf[ClassSymbol]
 
-    final def asTerm(implicit ctx: Context): TermSymbol = { assert(isTerm); asInstanceOf[TermSymbol] }
-    final def asType(implicit ctx: Context): TypeSymbol = { assert(isType); asInstanceOf[TypeSymbol] }
+    final def asTerm(implicit ctx: Context): TermSymbol = { assert(isTerm, s"asTerm called on not-a-Term $this" ); asInstanceOf[TermSymbol] }
+    final def asType(implicit ctx: Context): TypeSymbol = { assert(isType, s"isType called on not-a-Type $this"); asInstanceOf[TypeSymbol] }
     final def asClass: ClassSymbol = asInstanceOf[ClassSymbol]
 
     /** A unique, densely packed integer tag for each class symbol, -1
@@ -367,7 +367,7 @@ object Symbols {
 
     /** This symbol entered into owner's scope (owner must be a class). */
     final def entered(implicit ctx: Context): this.type = {
-      assert(this.owner.isClass) // !!! DEBUG
+      assert(this.owner.isClass, s"symbol ($this) entered the scope of non-class owner ${this.owner}") // !!! DEBUG
       this.owner.asClass.enter(this)
       if (this is Module) this.owner.asClass.enter(this.moduleClass)
       this
@@ -480,26 +480,22 @@ object Symbols {
 
     override def superId(implicit ctx: Context): Int = {
       val hint = superIdHint
-      val key = this.typeRef
-      if (hint >= 0 && hint <= ctx.lastSuperId && (ctx.classOfId(hint) eq key))
+      if (hint >= 0 && hint <= ctx.lastSuperId && (ctx.classOfId(hint) eq this))
         hint
       else {
-        val id = ctx.superIdOfClass get key match {
+        val id = ctx.superIdOfClass get this match {
           case Some(id) =>
             id
           case None =>
             val id = ctx.nextSuperId
-            ctx.superIdOfClass(key) = id
-            ctx.classOfId(id) = key
+            ctx.superIdOfClass(this) = id
+            ctx.classOfId(id) = this
             id
         }
         superIdHint = id
         id
       }
     }
-
-    /** Have we seen a subclass of this class? */
-    def hasChildren = superIdHint >= 0
 
     override protected def prefixString = "ClassSymbol"
   }

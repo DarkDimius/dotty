@@ -34,7 +34,7 @@ class Definitions {
     scope.enter(newSymbol(cls, name, flags | TypeParamCreationFlags, TypeBounds.empty))
 
   private def newSyntheticTypeParam(cls: ClassSymbol, scope: MutableScope, paramFlags: FlagSet, suffix: String = "T0") =
-    newTypeParam(cls, suffix.toTypeName.expandedName(cls), ExpandedName, scope)
+    newTypeParam(cls, suffix.toTypeName.expandedName(cls), ExpandedName | paramFlags, scope)
 
   private def specialPolyClass(name: TypeName, paramFlags: FlagSet, parentConstrs: Type*): ClassSymbol = {
     val completer = new LazyType {
@@ -282,11 +282,11 @@ class Definitions {
 
   object FunctionType {
     def apply(args: List[Type], resultType: Type) =
-      FunctionClass(args.length).typeRef.appliedTo(args :+ resultType)
+      FunctionClass(args.length).typeRef.appliedTo(args ::: resultType :: Nil)
     def unapply(ft: Type): Option[(List[Type], Type)] = { // Dotty deviation: Type annotation needed because inferred type
                                                           // is Some[(List[Type], Type)] | None, which is not a legal unapply type.
       val tsym = ft.typeSymbol
-      lazy val targs = ft.typeArgs
+      lazy val targs = ft.argInfos
       if ((FunctionClasses contains tsym) &&
           (targs.length - 1 <= MaxFunctionArity) &&
           (FunctionClass(targs.length - 1) == tsym)) Some((targs.init, targs.last)) // Dotty deviation: no auto-tupling
@@ -317,7 +317,7 @@ class Definitions {
   lazy val RootImports = List[Symbol](JavaLangPackageVal, ScalaPackageVal, ScalaPredefModule, DottyPredefModule)
 
   def isTupleType(tp: Type) = {
-    val arity = tp.dealias.typeArgs.length
+    val arity = tp.dealias.argInfos.length
     arity <= MaxTupleArity && (tp isRef TupleClass(arity))
   }
 
@@ -329,7 +329,7 @@ class Definitions {
     0 <= arity && arity <= MaxFunctionArity && (tp isRef FunctionClass(arity))
   }
 
-  def functionArity(tp: Type) = tp.dealias.typeArgs.length - 1
+  def functionArity(tp: Type) = tp.dealias.argInfos.length - 1
 
   // ----- Higher kinds machinery ------------------------------------------
 

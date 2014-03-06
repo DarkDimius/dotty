@@ -89,11 +89,10 @@ object Denotations {
    *    val y = x.f
    *
    *  Then the denotation of `y` is `SingleDenotation(NoSymbol, A | B)`.
+   *
+   *  @param symbol  The referencing symbol, or NoSymbol is none exists
    */
-  abstract class Denotation extends util.DotClass with printing.Showable {
-
-    /** The referencing symbol, exists only for non-overloaded denotations */
-    def symbol: Symbol
+  abstract class Denotation(val symbol: Symbol) extends util.DotClass with printing.Showable {
 
     /** The type info of the denotation, exists only for non-overloaded denotations */
     def info(implicit ctx: Context): Type
@@ -201,6 +200,10 @@ object Denotations {
     def & (that: Denotation, pre: Type)(implicit ctx: Context): Denotation = {
 
       /** Try to merge denot1 and denot2 without adding a new signature.
+       *  Prefer denotations with more specific types, provided the symbol stays accessible
+       *  Prefer denotations with accessible symbols over denotations with
+       *  existing, but inaccessible symbols.
+       *  If there's no preference, produce a JointRefDenotation with the intersection of both infos.
        *  If unsuccessful, return NoDenotation.
        */
       def mergeDenot(denot1: Denotation, denot2: SingleDenotation): Denotation = denot1 match {
@@ -218,18 +221,18 @@ object Denotations {
             val info1 = denot1.info
             val info2 = denot2.info
             val sym2 = denot2.symbol
-            def sym2Accessible = sym2.isAccessibleFrom(pre)
-            if (info2 <:< info1 && sym2Accessible) denot2
+            val sym2Accessible = sym2.isAccessibleFrom(pre)
+            if (sym2Accessible && info2 <:< info1) denot2
             else {
               val sym1 = denot1.symbol
-              def sym1Accessible = sym1.isAccessibleFrom(pre)
-              if (info1 <:< info2 && sym1Accessible) denot1
+              val sym1Accessible = sym1.isAccessibleFrom(pre)
+              if (sym1Accessible && info1 <:< info2) denot1
+              else if (sym1Accessible && sym2.exists && !sym2Accessible) denot1
+              else if (sym2Accessible && sym1.exists && !sym1Accessible) denot2
               else {
                 val sym =
                   if (!sym1.exists) sym2
                   else if (!sym2.exists) sym1
-                  else if (!sym1Accessible) sym2
-                  else if (!sym2Accessible) sym1
                   else if (sym2 isAsConcrete sym1) sym2
                   else sym1
                 new JointRefDenotation(sym, info1 & info2, denot1.validFor & denot2.validFor)
@@ -316,8 +319,7 @@ object Denotations {
 
   /** An overloaded denotation consisting of the alternatives of both given denotations.
    */
-  case class MultiDenotation(denot1: Denotation, denot2: Denotation) extends Denotation {
-    final def symbol: Symbol = NoSymbol
+  case class MultiDenotation(denot1: Denotation, denot2: Denotation) extends Denotation(NoSymbol) {
     final def infoOrCompleter = multiHasNot("info")
     final def info(implicit ctx: Context) = infoOrCompleter
     final def validFor = denot1.validFor & denot2.validFor
@@ -356,7 +358,7 @@ object Denotations {
   }
 
   /** A non-overloaded denotation */
-  abstract class SingleDenotation extends Denotation with PreDenotation {
+  abstract class SingleDenotation(symbol: Symbol) extends Denotation(symbol) with PreDenotation {
     def hasUniqueSym: Boolean
     protected def newLikeThis(symbol: Symbol, info: Type): SingleDenotation
 
@@ -391,7 +393,7 @@ object Denotations {
       exists && p(this)
 
     def accessibleFrom(pre: Type, superAccess: Boolean)(implicit ctx: Context): Denotation =
-      if (symbol isAccessibleFrom (pre, superAccess)) this else NoDenotation
+      if (!symbol.exists || symbol.isAccessibleFrom(pre, superAccess)) this else NoDenotation
 
     def atSignature(sig: Signature)(implicit ctx: Context): SingleDenotation =
       if (sig matches signature) this else NoDenotation
@@ -464,7 +466,7 @@ object Denotations {
      */
     private def bringForward()(implicit ctx: Context): SingleDenotation = this match {
       case denot: SymDenotation if ctx.stillValid(denot) =>
-        if (denot.exists) assert(ctx.runId > validFor.runId)
+        if (denot.exists) assert(ctx.runId > validFor.runId, s"denotation $denot invalid in run ${ctx.runId}. ValidFor: $validFor")
         var d: SingleDenotation = denot
         do {
           d.validFor = Period(ctx.period.runId, d.validFor.firstPhaseId, d.validFor.lastPhaseId)
@@ -525,7 +527,7 @@ object Denotations {
           while (!(cur.validFor contains currentPeriod)) {
             cur = cur.nextInRun
             cnt += 1
-            assert(cnt <= MaxPossiblePhaseId)
+            assert(cnt <= MaxPossiblePhaseId, "seems to be a loop in Denotations")
           }
         }
         cur
@@ -571,6 +573,7 @@ object Denotations {
 
     type AsSeenFromResult = SingleDenotation
     protected def computeAsSeenFrom(pre: Type)(implicit ctx: Context): SingleDenotation = {
+      val symbol = this.symbol
       val owner = this match {
         case thisd: SymDenotation => thisd.owner
         case _ => if (symbol.exists) symbol.owner else NoSymbol
@@ -585,34 +588,33 @@ object Denotations {
     }
   }
 
-  abstract class NonSymSingleDenotation extends SingleDenotation {
+  abstract class NonSymSingleDenotation(symbol: Symbol) extends SingleDenotation(symbol) {
     def infoOrCompleter: Type
     def info(implicit ctx: Context) = infoOrCompleter
     def isType = infoOrCompleter.isInstanceOf[TypeType]
   }
 
   class UniqueRefDenotation(
-    val symbol: Symbol,
+    symbol: Symbol,
     val infoOrCompleter: Type,
-    initValidFor: Period) extends NonSymSingleDenotation {
+    initValidFor: Period) extends NonSymSingleDenotation(symbol) {
     validFor = initValidFor
     override def hasUniqueSym: Boolean = true
     protected def newLikeThis(s: Symbol, i: Type): SingleDenotation = new UniqueRefDenotation(s, i, validFor)
   }
 
   class JointRefDenotation(
-    val symbol: Symbol,
+    symbol: Symbol,
     val infoOrCompleter: Type,
-    initValidFor: Period) extends NonSymSingleDenotation {
+    initValidFor: Period) extends NonSymSingleDenotation(symbol) {
     validFor = initValidFor
     override def hasUniqueSym = false
     protected def newLikeThis(s: Symbol, i: Type): SingleDenotation = new JointRefDenotation(s, i, validFor)
   }
 
-  class ErrorDenotation(implicit ctx: Context) extends NonSymSingleDenotation {
+  class ErrorDenotation(implicit ctx: Context) extends NonSymSingleDenotation(NoSymbol) {
     override def exists = false
     override def hasUniqueSym = false
-    def symbol = NoSymbol
     def infoOrCompleter = NoType
     validFor = Period.allInRun(ctx.runId)
     protected def newLikeThis(s: Symbol, i: Type): SingleDenotation = this
@@ -702,10 +704,11 @@ object Denotations {
   }
 
   case class DenotUnion(denots1: PreDenotation, denots2: PreDenotation) extends PreDenotation {
-    assert(denots1.exists && denots2.exists)
+    assert(denots1.exists && denots2.exists, s"Union of non-existing denotations ($denots1) and ($denots2)")
     def exists = true
     def first = denots1.first
-    def toDenot(pre: Type)(implicit ctx: Context) = (denots1 toDenot pre) & (denots2 toDenot pre, pre)
+    def toDenot(pre: Type)(implicit ctx: Context) =
+      (denots1 toDenot pre) & (denots2 toDenot pre, pre)
     def containsSym(sym: Symbol) =
       (denots1 containsSym sym) || (denots2 containsSym sym)
     def containsSig(sig: Signature)(implicit ctx: Context) =

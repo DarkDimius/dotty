@@ -96,13 +96,13 @@ object Types {
         else thissym eq sym
       case this1: RefinedType =>
         // make sure all refinements are type arguments
-        this1.parent.isRef(sym) && this.typeArgs.nonEmpty
+        this1.parent.isRef(sym) && this.argInfos.nonEmpty
       case _ =>
         false
     }
 
     /** Is this type an instance of a non-bottom subclass of the given class `cls`? */
-    final def derivesFrom(cls: Symbol)(implicit defctx: Context): Boolean =
+    final def derivesFrom(cls: Symbol)(implicit ctx: Context): Boolean =
       classSymbol.derivesFrom(cls)
 
    /** A type T is a legal prefix in a type selection T#A if
@@ -466,7 +466,7 @@ object Types {
 
     /** Is this type a subtype of that type? */
     final def <:<(that: Type)(implicit ctx: Context): Boolean = track("<:<") {
-      ctx.typeComparer.isSubType(this, that)
+      ctx.typeComparer.topLevelSubType(this, that)
     }
 
     /** Is this type the same as that type?
@@ -495,10 +495,12 @@ object Types {
           this, that, alwaysMatchSimple = !ctx.phase.erasedTypes)
       }
 
-    /** The basetype of this type with given class symbol */
-    final def baseType(base: Symbol)(implicit ctx: Context): Type = /*ctx.traceIndented(s"$this baseType $base")*/ /*>|>*/ track("baseType") /*<|<*/ {
+    /** The basetype TypeRef of this type with given class symbol,
+     *  but without including any type arguments
+     */
+    final def baseTypeRef(base: Symbol)(implicit ctx: Context): Type = /*ctx.traceIndented(s"$this baseTypeRef $base")*/ /*>|>*/ track("baseTypeRef") /*<|<*/ {
       base.denot match {
-        case classd: ClassDenotation => classd.baseTypeOf(this)
+        case classd: ClassDenotation => classd.baseTypeRefOf(this)//widen.dealias)
         case _ => NoType
       }
     }
@@ -590,8 +592,12 @@ object Types {
     /** If this is repeated parameter type, its underlying type,
      *  else the type itself.
      */
-    def underlyingIfRepeated(implicit ctx: Context): Type =
-      this.translateParameterized(defn.RepeatedParamClass, defn.SeqClass)
+    def underlyingIfRepeated(implicit ctx: Context): Type = this match {
+      case rt @ RefinedType(tref: TypeRef, name) if defn.RepeatedParamClasses contains tref.symbol =>
+        RefinedType(defn.SeqClass.typeRef, name, rt.refinedInfo)
+      case _ =>
+        this
+    }
 
     /** If this is a (possibly aliased, annotated, and/or parameterized) reference to
      *  a class, the class type ref, otherwise NoType.
@@ -836,7 +842,8 @@ object Types {
     def variances(include: TypeVar => Boolean)(implicit ctx: Context): VarianceMap = track("variances") {
       val accu = new TypeAccumulator[VarianceMap] {
         def apply(vmap: VarianceMap, t: Type): VarianceMap = t match {
-          case t: TypeVar if !t.isInstantiated && include(t) =>
+          case t: TypeVar
+          if !t.isInstantiated && (ctx.typerState.constraint contains t) && include(t) =>
             val v = vmap(t)
             if (v == null) vmap.updated(t, variance)
             else if (v == variance) vmap
@@ -937,8 +944,11 @@ object Types {
   /** A marker trait for types that apply only to term symbols */
   trait TermType extends Type
 
+  /** A marker trait for types that can be types of values or prototypes of value types */
+  trait ValueTypeOrProto extends TermType
+
   /** A marker trait for types that can be types of values */
-  trait ValueType extends TermType
+  trait ValueType extends ValueTypeOrProto
 
   /** A marker trait for types that are guaranteed to contain only a
    *  single non-null value (they might contain null in addition).
@@ -976,7 +986,7 @@ object Types {
     val prefix: Type
     val name: Name
 
-    assert(prefix.isValueType || (prefix eq NoPrefix))
+    assert(prefix.isValueType || (prefix eq NoPrefix), s"invalid prefix $prefix")
 
     private[this] var lastDenotation: Denotation = _
     private[this] var lastSymbol: Symbol = _
@@ -1283,8 +1293,6 @@ object Types {
 
     override def underlying(implicit ctx: Context) = parent
 
-    protected def isProto: Boolean = false
-
     /** Derived refined type, with a twist: A refinement with a higher-kinded type param placeholder
      *  is transformed to a refinement of the original type parameter if that one exists.
      */
@@ -1315,8 +1323,7 @@ object Types {
       case that: RefinedType =>
         this.parent == that.parent &&
         this.refinedName == that.refinedName &&
-        this.refinedInfo == that.refinedInfo &&
-        !that.isProto
+        this.refinedInfo == that.refinedInfo
       case _ =>
         false
     }
@@ -1871,13 +1878,28 @@ object Types {
       if ((lo eq this.lo) && (hi eq this.hi) && (variance == this.variance)) this
       else TypeBounds(lo, hi, variance)
 
+    /** pre: this is a type alias */
+    def derivedTypeAlias(tp: Type, variance: Int = this.variance)(implicit ctx: Context) =
+      if (lo eq tp) this
+      else TypeAlias(tp, variance)
+
     def contains(tp: Type)(implicit ctx: Context) = lo <:< tp && tp <:< hi
 
-    def & (that: TypeBounds)(implicit ctx: Context): TypeBounds =
-      derivedTypeBounds(this.lo | that.lo, this.hi & that.hi, this commonVariance that)
+    def & (that: TypeBounds)(implicit ctx: Context): TypeBounds = {
+      val v = this commonVariance that
+      if (v != 0 && (this.lo eq this.hi) && (that.lo eq that.hi))
+        if (v > 0) derivedTypeAlias(this.hi & that.hi, v)
+        else derivedTypeAlias(this.lo | that.lo, v)
+      else derivedTypeBounds(this.lo | that.lo, this.hi & that.hi, v)
+    }
 
-    def | (that: TypeBounds)(implicit ctx: Context): TypeBounds =
-      derivedTypeBounds(this.lo & that.lo, this.hi | that.hi, this commonVariance that)
+    def | (that: TypeBounds)(implicit ctx: Context): TypeBounds = {
+      val v = this commonVariance that
+      if (v == 0 && (this.lo eq this.hi) && (that.lo eq that.hi))
+        if (v > 0) derivedTypeAlias(this.hi | that.hi, v)
+        else derivedTypeAlias(this.lo & that.lo, v)
+      else derivedTypeBounds(this.lo & that.lo, this.hi | that.hi, v)
+    }
 
     override def & (that: Type)(implicit ctx: Context) = that match {
       case that: TypeBounds => this & that
@@ -2080,7 +2102,7 @@ object Types {
 
   // ----- TypeMaps --------------------------------------------------------------------
 
-  abstract class TypeMap(implicit ctx: Context) extends (Type => Type) { thisMap =>
+  abstract class TypeMap(implicit protected val ctx: Context) extends (Type => Type) { thisMap =>
 
     protected def stopAtStatic = true
 
@@ -2089,72 +2111,87 @@ object Types {
     protected var variance = 1
 
     /** Map this function over given type */
-    def mapOver(tp: Type): Type = tp match {
-      case tp: NamedType =>
-        if (stopAtStatic && tp.symbol.isStatic) tp
-        else tp.derivedSelect(this(tp.prefix))
+    def mapOver(tp: Type): Type = {
+      implicit val ctx = this.ctx
+      tp match {
+        case tp: NamedType =>
+          if (stopAtStatic && tp.symbol.isStatic) tp
+          else tp.derivedSelect(this(tp.prefix))
 
-      case _: ThisType
-         | _: BoundType
-         | NoPrefix => tp
+        case _: ThisType
+          | _: BoundType
+          | NoPrefix => tp
 
-      case tp: RefinedType =>
-        tp.derivedRefinedType(this(tp.parent), tp.refinedName, this(tp.refinedInfo))
+        case tp: RefinedType =>
+          tp.derivedRefinedType(this(tp.parent), tp.refinedName, this(tp.refinedInfo))
 
-      case tp @ MethodType(pnames, ptypes) =>
-        variance = -variance
-        val ptypes1 = ptypes mapConserve this
-        variance = -variance
-        tp.derivedMethodType(pnames, ptypes1, this(tp.resultType))
+        case tp: TypeBounds =>
+          def mapOverBounds = {
+            val lo = tp.lo
+            val hi = tp.hi
+            if (lo eq hi) {
+              val saved = variance
+              variance = variance * tp.variance
+              val lo1 = this(lo)
+              variance = saved
+              tp.derivedTypeAlias(lo1)
+            } else {
+              variance = -variance
+              val lo1 = this(lo)
+              variance = -variance
+              tp.derivedTypeBounds(lo1, this(hi))
+            }
+          }
+          mapOverBounds
 
-      case tp @ ExprType(restpe) =>
-        tp.derivedExprType(this(restpe))
+        case tp: MethodType =>
+          def mapOverMethod = {
+            variance = -variance
+            val ptypes1 = tp.paramTypes mapConserve this
+            variance = -variance
+            tp.derivedMethodType(tp.paramNames, ptypes1, this(tp.resultType))
+          }
+          mapOverMethod
 
-      case tp @ PolyType(pnames) =>
-        variance = -variance
-        val bounds1 = tp.paramBounds.mapConserve(apply(_).bounds)
-        variance = -variance
-        tp.derivedPolyType(
-          pnames, bounds1, this(tp.resultType))
+        case tp: ExprType =>
+          tp.derivedExprType(this(tp.resultType))
 
-      case tp @ SuperType(thistp, supertp) =>
-        tp.derivedSuperType(this(thistp), this(supertp))
+        case tp: PolyType =>
+          def mapOverPoly = {
+            variance = -variance
+            val bounds1 = tp.paramBounds.mapConserve(this).asInstanceOf[List[TypeBounds]]
+            variance = -variance
+            tp.derivedPolyType(
+              tp.paramNames, bounds1, this(tp.resultType))
+          }
+          mapOverPoly
 
-      case tp @ TypeBounds(lo, hi) =>
-        if (lo eq hi) {
-          val saved = variance
-          variance = variance * tp.variance
-          val lo1 = try this(lo) finally variance = saved
-          tp.derivedTypeBounds(lo1, lo1)
-        } else {
-          variance = -variance
-          val lo1 = this(lo)
-          variance = -variance
-          tp.derivedTypeBounds(lo1, this(hi))
-        }
+        case tp @ SuperType(thistp, supertp) =>
+          tp.derivedSuperType(this(thistp), this(supertp))
 
-      case tp: ClassInfo =>
-        mapClassInfo(tp)
+        case tp: ClassInfo =>
+          mapClassInfo(tp)
 
-      case tp: TypeVar =>
-        val inst = tp.instanceOpt
-        if (inst.exists) apply(inst) else tp
+        case tp: TypeVar =>
+          val inst = tp.instanceOpt
+          if (inst.exists) apply(inst) else tp
 
-      case tp: AndOrType =>
-        tp.derivedAndOrType(this(tp.tp1), this(tp.tp2))
+        case tp: AndOrType =>
+          tp.derivedAndOrType(this(tp.tp1), this(tp.tp2))
 
-      case tp @ AnnotatedType(annot, underlying) =>
-        val underlying1 = mapOver(underlying)
-        if (underlying1 eq underlying) tp else underlying1
+        case tp @ AnnotatedType(annot, underlying) =>
+          val underlying1 = this(underlying)
+          if (underlying1 eq underlying) tp else underlying1
 
-      case tp @ WildcardType =>
-        tp.derivedWildcardType(mapOver(tp.optBounds))
+        case tp @ WildcardType =>
+          tp.derivedWildcardType(mapOver(tp.optBounds))
 
-      case tp: ProtoType =>
-        tp.map(this)
+        case tp: ProtoType =>
+          tp.map(this)
 
-      case _ =>
-        tp
+        case _ =>
+          tp
+      }
     }
 
     def mapOver(syms: List[Symbol]): List[Symbol] =
@@ -2203,20 +2240,26 @@ object Types {
 
   // ----- TypeAccumulators ----------------------------------------------------
 
-  abstract class TypeAccumulator[T](implicit ctx: Context) extends ((T, Type) => T) {
+  abstract class TypeAccumulator[T](implicit protected val ctx: Context) extends ((T, Type) => T) {
+
+    protected def stopAtStatic = true
+
     def apply(x: T, tp: Type): T
 
-    protected def apply(x: T, annot: Annotation): T = x // don't go into annotations
+    protected def applyToAnnot(x: T, annot: Annotation): T = x // don't go into annotations
 
     protected var variance = 1
 
     def foldOver(x: T, tp: Type): T = tp match {
       case tp: TypeRef =>
-        val tp1 = tp.lookupRefined(tp.prefix, tp.name)
-        this(x, if (tp1.exists) tp1 else tp.prefix)
-
+        if (stopAtStatic && tp.symbol.isStatic) x
+        else {
+          val tp1 = tp.lookupRefined(tp.prefix, tp.name)
+          this(x, if (tp1.exists) tp1 else tp.prefix)
+        }
       case tp: TermRef =>
-        this(x, tp.prefix)
+        if (stopAtStatic && tp.symbol.isStatic) x
+        else this(x, tp.prefix)
 
       case _: ThisType
          | _: BoundType
@@ -2225,30 +2268,13 @@ object Types {
       case tp: RefinedType =>
         this(this(x, tp.parent), tp.refinedInfo)
 
-      case tp @ MethodType(pnames, ptypes) =>
-        variance = -variance
-        val y = (x /: ptypes)(this)
-        variance = -variance
-        this(y, tp.resultType)
-
-      case ExprType(restpe) =>
-        this(x, restpe)
-
-      case tp @ PolyType(pnames) =>
-        variance = -variance
-        val y = (x /: tp.paramBounds)(this)
-        variance = -variance
-        this(y, tp.resultType)
-
-      case SuperType(thistp, supertp) =>
-        this(this(x, thistp), supertp)
-
       case bounds @ TypeBounds(lo, hi) =>
         if (lo eq hi) {
           val saved = variance
           variance = variance * bounds.variance
-          try this(x, lo)
-          finally variance = saved
+          val result = this(x, lo)
+          variance = saved
+          result
         }
         else {
           variance = -variance
@@ -2257,6 +2283,24 @@ object Types {
           this(y, hi)
         }
 
+      case tp @ MethodType(pnames, ptypes) =>
+        variance = -variance
+        val y = foldOver(x, ptypes)
+        variance = -variance
+        this(y, tp.resultType)
+
+      case ExprType(restpe) =>
+        this(x, restpe)
+
+      case tp @ PolyType(pnames) =>
+        variance = -variance
+        val y = foldOver(x, tp.paramBounds)
+        variance = -variance
+        this(y, tp.resultType)
+
+      case SuperType(thistp, supertp) =>
+        this(this(x, thistp), supertp)
+
       case tp @ ClassInfo(prefix, _, _, _, _) =>
         this(x, prefix)
 
@@ -2264,7 +2308,7 @@ object Types {
         this(this(x, tp.tp1), tp.tp2)
 
       case AnnotatedType(annot, underlying) =>
-        this(this(x, annot), underlying)
+        this(applyToAnnot(x, annot), underlying)
 
       case tp: TypeVar =>
         this(x, tp.underlying)
@@ -2277,13 +2321,20 @@ object Types {
 
       case _ => x
     }
+
+    final def foldOver(x: T, ts: List[Type]): T = ts match {
+      case t :: ts1 => foldOver(apply(x, t), ts1)
+      case nil => x
+    }
   }
 
   class ExistsAccumulator(p: Type => Boolean)(implicit ctx: Context) extends TypeAccumulator[Boolean] {
+    override def stopAtStatic = false
     def apply(x: Boolean, tp: Type) = x || p(tp) || foldOver(x, tp)
   }
 
   class NamedPartsAccumulator(p: NamedType => Boolean)(implicit ctx: Context) extends TypeAccumulator[mutable.Set[NamedType]] {
+    override def stopAtStatic = false
     def maybeAdd(x: mutable.Set[NamedType], tp: NamedType) = if (p(tp)) x += tp else x
     val seen: mutable.Set[Type] = mutable.Set()
     def apply(x: mutable.Set[NamedType], tp: Type): mutable.Set[NamedType] =

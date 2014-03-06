@@ -7,10 +7,11 @@ import Periods._
 import Symbols._
 import typer.{FrontEnd, Typer, Mode, ImportInfo}
 import reporting.ConsoleReporter
+import dotty.tools.dotc.core.Phases.Phase
 
 class Compiler {
 
-  def phases = List(new FrontEnd, new transform.LocalLazyVals)
+  def phases: List[Phase] = List(new FrontEnd)
 
   var runId = 1
   def nextRunId = { runId += 1; runId }
@@ -30,6 +31,11 @@ class Compiler {
     (start.withRunInfo(new RunInfo(start)) /: defn.RootImports)(addImport)
   }
 
-  def newRun(implicit ctx: Context): Run =
-    new Run(this)(rootContext)
+  def newRun(implicit ctx: Context): Run = {
+    try new Run(this)(rootContext)
+    finally {
+      ctx.base.reset()
+      ctx.runInfo.clear()
+    }
+  }
 }

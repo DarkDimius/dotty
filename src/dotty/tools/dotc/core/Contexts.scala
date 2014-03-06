@@ -401,35 +401,28 @@ object Contexts {
     def nextId = { _nextId += 1; _nextId }
 
     /** A map from a superclass id to the typeref of the class that has it */
-    private[core] var classOfId = new Array[TypeRef](InitialSuperIdsSize)
+    private[core] var classOfId = new Array[ClassSymbol](InitialSuperIdsSize)
 
     /** A map from a the typeref of a class to its superclass id */
-    private[core] val superIdOfClass = new mutable.AnyRefMap[TypeRef, Int]
+    private[core] val superIdOfClass = new mutable.AnyRefMap[ClassSymbol, Int]
 
     /** The last allocated superclass id */
     private[core] var lastSuperId = -1
 
     /** Allocate and return next free superclass id */
     private[core] def nextSuperId: Int = {
-      lastSuperId += 1;
+      lastSuperId += 1
       if (lastSuperId >= classOfId.length) {
-        val tmp = new Array[TypeRef](classOfId.length * 2)
+        val tmp = new Array[ClassSymbol](classOfId.length * 2)
         classOfId.copyToArray(tmp)
         classOfId = tmp
       }
       lastSuperId
     }
 
-    // SymDenotations state
-    /** A table where unique superclass bits are kept.
-     *  These are bitsets that contain the superclass ids of all base classes of a class.
-     *  Used to speed up isSubClass tests.
-     */
-    private[core] val uniqueBits = new util.HashSet[BitSet]("superbits", 1024)
-
     // Types state
     /** A table for hash consing unique types */
-    private[core] val uniques = new util.HashSet[Type]("uniques", initialUniquesCapacity) {
+    private[core] val uniques = new util.HashSet[Type](initialUniquesCapacity) {
       override def hash(x: Type): Int = x.hash
     }
 
@@ -442,11 +435,14 @@ object Contexts {
     /** A table for hash consing unique type bounds */
     private[core] val uniqueTypeBounds = new TypeBoundsUniques
 
-    private def uniqueMaps = List(uniques, uniqueRefinedTypes, uniqueNamedTypes, uniqueTypeBounds)
+    private def uniqueSets = Map(
+        "uniques" -> uniques,
+        "uniqueRefinedTypes" -> uniqueRefinedTypes,
+        "uniqueNamedTypes" -> uniqueNamedTypes,
+        "uniqueTypeBounds" -> uniqueTypeBounds)
 
     /** A map that associates label and size of all uniques sets */
-    def uniquesSize: Map[String, Int] =
-      uniqueMaps.map(m => m.label -> m.size).toMap
+    def uniquesSizes: Map[String, Int] = uniqueSets.mapValues(_.size)
 
     /** The number of recursive invocation of underlying on a NamedType
      *  during a controlled operation.
@@ -472,6 +468,13 @@ object Contexts {
 
     /** Should warnings and errors containing non-sensical strings be suppressed? */
     private[dotc] var suppressNonSensicalErrors = true
+
+    def reset() = {
+      for ((_, set) <- uniqueSets) set.clear()
+      for (i <- 0 until classOfId.length) classOfId(i) = null
+      superIdOfClass.clear()
+      lastSuperId = -1
+    }
   }
 
   object Context {

@@ -15,6 +15,7 @@ import printing.Texts._
 import printing.Printer
 import io.AbstractFile
 import util.common._
+import PickleBuffer._
 import scala.reflect.internal.pickling.PickleFormat._
 import Decorators._
 import scala.collection.{ mutable, immutable }
@@ -75,7 +76,7 @@ object UnPickler {
     case tp @ MethodType(paramNames, paramTypes) =>
       val lastArg = paramTypes.last
       assert(lastArg isRef defn.ArrayClass)
-      val elemtp0 :: Nil = lastArg.baseTypeArgs(defn.ArrayClass)
+      val elemtp0 :: Nil = lastArg.baseArgInfos(defn.ArrayClass)
       val elemtp = elemtp0 match {
         case AndType(t1, t2) if t1.typeSymbol.isAbstractType && (t2 isRef defn.ObjectClass) =>
           t1 // drop intersection with Object for abstract types in varargs. UnCurry can handle them.
@@ -171,7 +172,7 @@ class UnPickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClassRoot:
     case _ => errorBadSignature(s"a runtime exception occured: $ex", Some(ex))
   }
 
-  private var postReadOp: () => Unit = null
+  private var postReadOp: Context => Unit = null
 
   def run()(implicit ctx: Context) =
     try {
@@ -182,7 +183,7 @@ class UnPickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClassRoot:
           readIndex = index(i)
           entries(i) = readSymbol()
           if (postReadOp != null) {
-            postReadOp()
+            postReadOp(ctx)
             postReadOp = null
           }
           readIndex = savedIndex
@@ -457,7 +458,7 @@ class UnPickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClassRoot:
         ctx.newSymbol(owner, name1, flags1, localMemberUnpickler, coord = start)
       case CLASSsym =>
         val infoRef = readNat()
-        postReadOp = () => atReadPos(index(infoRef), readTypeParams) // force reading type params early, so they get entered in the right order.
+        postReadOp = implicit ctx => atReadPos(index(infoRef), readTypeParams) // force reading type params early, so they get entered in the right order.
         if (isClassRoot)
           completeRoot(
             classRoot, rootClassUnpickler(start, classRoot.symbol, NoSymbol))
@@ -471,7 +472,7 @@ class UnPickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClassRoot:
           def completer(cls: Symbol) = {
             val unpickler = new LocalUnpickler() withDecls symScope(cls)
             if (flags is ModuleClass)
-              unpickler withSourceModule (
+              unpickler withSourceModule (implicit ctx =>
                 cls.owner.decls.lookup(cls.name.sourceModuleName)
                   .suchThat(_ is Module).symbol)
             else unpickler
@@ -543,7 +544,7 @@ class UnPickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClassRoot:
   def rootClassUnpickler(start: Coord, cls: Symbol, module: Symbol) =
     (new LocalUnpickler with SymbolLoaders.SecondCompleter {
       override def startCoord(denot: SymDenotation): Coord = start
-    }) withDecls symScope(cls) withSourceModule module
+    }) withDecls symScope(cls) withSourceModule (_ => module)
 
   /** Convert
    *    tp { type name = sym } forSome { sym >: L <: H }
@@ -630,7 +631,7 @@ class UnPickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClassRoot:
             if (sym.owner != cls) {
               val overriding = cls.decls.lookup(sym.name)
               if (overriding.exists && overriding != sym) {
-                val base = pre.baseType(sym.owner)
+                val base = pre.baseTypeWithArgs(sym.owner)
                 assert(base.exists)
                 pre = SuperType(pre, base)
               }
@@ -852,7 +853,7 @@ class UnPickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClassRoot:
     val start = readIndex
     val atp = readTypeRef()
     Annotation.deferred(
-      atp.typeSymbol, atReadPos(start, () => readAnnotationContents(end)))
+      atp.typeSymbol, implicit ctx => atReadPos(start, () => readAnnotationContents(end)))
   }
 
   /* Read an abstract syntax tree */
