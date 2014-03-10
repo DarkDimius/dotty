@@ -15,7 +15,7 @@ object DottyBuild extends Build {
     resourceDirectory in Compile := baseDirectory.value / "resources",
     unmanagedSourceDirectories in Compile := Seq((scalaSource in Compile).value),
     unmanagedSourceDirectories in Test := Seq((scalaSource in Test).value),
-    
+
     // include sources in eclipse (downloads source code for all dependencies)
     //http://stackoverflow.com/questions/10472840/how-to-attach-sources-to-sbt-managed-dependencies-in-scala-ide#answer-11683728
     com.typesafe.sbteclipse.plugin.EclipsePlugin.EclipseKeys.withSource := true,
@@ -39,6 +39,10 @@ object DottyBuild extends Build {
     mainClass in (Compile, run) := Some("dotty.tools.dotc.Main"),
     fork in run := true,
     fork in Test := true,
+
+    // enable verbose printing of exceptions during junit tests
+    testOptions += Tests.Argument(TestFrameworks.JUnit, "-a"),
+
     // http://grokbase.com/t/gg/simple-build-tool/135ke5y90p/sbt-setting-jvm-boot-paramaters-for-scala
     javaOptions <++= (managedClasspath in Runtime, packageBin in Compile) map { (attList, bin) =>
        // put the Scala {library, reflect, compiler} in the classpath

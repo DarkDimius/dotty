@@ -5,10 +5,7 @@ jdk:
   - oraclejdk7
 notifications:
   email:
-    - dotty-reports@googlegroups.com
-branches:
-  only:
-    - master
+    - reports@d-d.me
 before_install:
   - cd ..
   - git clone https://github.com/scala/scala.git
