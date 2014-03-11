@@ -58,7 +58,7 @@ object DottyBuild extends Build {
          if (sys.props.isDefinedAt(TRAVIS_BUILD)) 
            List(s"-D$TRAVIS_BUILD=${sys.props(TRAVIS_BUILD)}")
          else 
-           List()
+           List("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005")
 
        travis_build ::: fullpath
     }
