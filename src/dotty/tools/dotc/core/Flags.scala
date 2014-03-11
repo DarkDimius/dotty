@@ -397,7 +397,7 @@ object Flags {
   /** Flags representing source modifiers */
   final val ModifierFlags =
     commonFlags(Private, Protected, Abstract, Final,
-     Sealed, Case, Implicit, Override, AbsOverride, Lazy)
+     Sealed, Case, Implicit, Override, AbsOverride, Lazy, Module, Synthetic)
 
   /** Flags representing access rights */
   final val AccessFlags = Private | Protected | Local
