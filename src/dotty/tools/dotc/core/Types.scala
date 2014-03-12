@@ -1183,13 +1183,13 @@ object Types {
   }
 
   final class CachedTermRef(prefix: Type, name: TermName, hc: Int) extends TermRef(prefix, name) {
-    // assert(prefix ne NoPrefix)
+    assert(prefix ne NoPrefix)
     myHash = hc
     override def computeHash = unsupported("computeHash")
   }
 
   final class CachedTypeRef(prefix: Type, name: TypeName, hc: Int) extends TypeRef(prefix, name) {
-    // assert(prefix ne NoPrefix)
+    assert(prefix ne NoPrefix)
     myHash = hc
     override def computeHash = unsupported("computeHash")
   }

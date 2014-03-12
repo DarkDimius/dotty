@@ -11,7 +11,7 @@ import dotty.tools.dotc.transform.PostTyperTransformers.{CompanionNeededPredicat
 
 
 class PostTyperTransformerTest extends DottyTest {
-
+/*
   @Test
   def shouldStripImports = checkCompile("frontend", "class A{ import scala.collection.mutable._; val d = 1}") {
     (tree, context) =>
@@ -130,6 +130,7 @@ class PostTyperTransformerTest extends DottyTest {
         classPos < modulePos
       )
   }
+  */
 
   @Test
   def shouldCreateNonExistingObjectsInBlock = checkCompile("frontend", "class D {def p = {class A{}; 1}} ") {
@@ -154,6 +155,7 @@ class PostTyperTransformerTest extends DottyTest {
         classPos < modulePos
       )
   }
+  /*
 
   @Test
   def shouldCreateNonExistingObjectsInTemplate = checkCompile("frontend", "class D {class A{}; } ") {
@@ -177,5 +179,5 @@ class PostTyperTransformerTest extends DottyTest {
       Assert.assertTrue("should create non-existing objects in template",
         classPos < modulePos
       )
-  }
+  }*/
 }
