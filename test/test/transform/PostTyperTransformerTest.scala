@@ -11,7 +11,7 @@ import dotty.tools.dotc.transform.PostTyperTransformers.{CompanionNeededPredicat
 
 
 class PostTyperTransformerTest extends DottyTest {
-/*
+
   @Test
   def shouldStripImports = checkCompile("frontend", "class A{ import scala.collection.mutable._; val d = 1}") {
     (tree, context) =>
@@ -123,14 +123,14 @@ class PostTyperTransformerTest extends DottyTest {
       val transformed = transformer.transform(tree).toString
       val classPattern = "TypeDef(Modifiers(,,List()),A,"
       val classPos = transformed.indexOf(classPattern)
-      val moduleClassPattern = ",A$,Template(DefDef(Modifiers(,,List()),<init>"
+      val moduleClassPattern = "TypeDef(Modifiers(final module <synthetic>,,List()),A$"
       val modulePos = transformed.indexOf(moduleClassPattern)
       println(transformed)
       Assert.assertTrue("should create non-existing objects in package",
         classPos < modulePos
       )
   }
-  */
+
 
   @Test
   def shouldCreateNonExistingObjectsInBlock = checkCompile("frontend", "class D {def p = {class A{}; 1}} ") {
@@ -149,13 +149,12 @@ class PostTyperTransformerTest extends DottyTest {
       val transformed = transformer.transform(tree).toString
       val classPattern = "TypeDef(Modifiers(,,List()),A,"
       val classPos = transformed.indexOf(classPattern)
-      val moduleClassPattern = ",A$,Template(DefDef(Modifiers(,,List()),<init>"
+      val moduleClassPattern = "TypeDef(Modifiers(final module <synthetic>,,List()),A$"
       val modulePos = transformed.indexOf(moduleClassPattern)
       Assert.assertTrue("should create non-existing objects in block",
         classPos < modulePos
       )
   }
-  /*
 
   @Test
   def shouldCreateNonExistingObjectsInTemplate = checkCompile("frontend", "class D {class A{}; } ") {
@@ -174,10 +173,10 @@ class PostTyperTransformerTest extends DottyTest {
       val transformed = transformer.transform(tree).toString
       val classPattern = "TypeDef(Modifiers(,,List()),A,"
       val classPos = transformed.indexOf(classPattern)
-      val moduleClassPattern = ",A$,Template(DefDef(Modifiers(,,List()),<init>"
+      val moduleClassPattern = "TypeDef(Modifiers(final module <synthetic>,,List()),A$"
       val modulePos = transformed.indexOf(moduleClassPattern)
       Assert.assertTrue("should create non-existing objects in template",
         classPos < modulePos
       )
-  }*/
+  }
 }
