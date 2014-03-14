@@ -29,7 +29,7 @@ class CreateCompanionObjectsTest extends DottyTest {
 
       val transformer = new PostTyperTransformer {
         override def transformations = Array(new CreateCompanionObjects(_, _) {
-          override def predicate(cts: TypeDef): Boolean = true
+          override def predicate(cts: TypeDef)(implicit ctx:Context): Boolean = true
         })
 
         override def name: String = "test"
@@ -52,7 +52,7 @@ class CreateCompanionObjectsTest extends DottyTest {
       implicit val ctx = context
       val transformer = new PostTyperTransformer {
         override def transformations = Array(new CreateCompanionObjects(_, _) {
-          override def predicate(cts: TypeDef): Boolean = true
+          override def predicate(cts: TypeDef)(implicit ctx:Context): Boolean = true
         })
 
         override def name: String = "test"
@@ -74,7 +74,7 @@ class CreateCompanionObjectsTest extends DottyTest {
       implicit val ctx = context
       val transformer = new PostTyperTransformer {
         override def transformations = Array(new CreateCompanionObjects(_, _) {
-          override def predicate(cts: TypeDef): Boolean = true
+          override def predicate(cts: TypeDef)(implicit ctx:Context): Boolean = true
         })
 
         override def name: String = "test"
@@ -96,7 +96,7 @@ class CreateCompanionObjectsTest extends DottyTest {
       implicit val ctx = context
       val transformer = new PostTyperTransformer {
         override def transformations = Array(new CreateCompanionObjects(_, _) {
-          override def predicate(cts: TypeDef): Boolean = cts.name.toString.contains("CREATE")
+          override def predicate(cts: TypeDef)(implicit ctx:Context): Boolean = cts.name.toString.contains("CREATE")
         })
 
         override def name: String = "test"
