@@ -220,6 +220,7 @@ class Definitions {
   lazy val AnnotationClass              = ctx.requiredClass("scala.annotation.Annotation")
   lazy val ClassfileAnnotationClass     = ctx.requiredClass("scala.annotation.ClassfileAnnotation")
   lazy val StaticAnnotationClass        = ctx.requiredClass("scala.annotation.StaticAnnotation")
+  lazy val TailrecClass                 = ctx.requiredClass("scala.annotation.tailrec")
 
   // Annotation classes
   lazy val AliasAnnot = ctx.requiredClass("dotty.annotation.internal.Alias")

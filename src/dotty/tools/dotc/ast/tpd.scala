@@ -308,6 +308,12 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def isValue(implicit ctx: Context): Boolean =
       tree.isTerm && tree.tpe.widen.isValueType
 
+    def currentClass(implicit ctx: Context) = {
+      def enclosingClass(sym: Symbol): Symbol =
+        if (sym.isClass || sym == NoSymbol) sym else enclosingClass(sym.owner)
+      enclosingClass(tree.symbol)
+    }
+
     def isValueOrPattern(implicit ctx: Context) =
       tree.isValue || tree.isPattern
 

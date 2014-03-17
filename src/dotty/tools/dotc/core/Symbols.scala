@@ -355,6 +355,11 @@ object Symbols {
     final def isType(implicit ctx: Context): Boolean = denot.isType
     final def isClass: Boolean = isInstanceOf[ClassSymbol]
 
+    def enclClass(implicit ctx: Context): ClassSymbol = {
+      if(this.isClass) this.asClass
+      else this.owner.enclClass
+    }
+
     final def asTerm(implicit ctx: Context): TermSymbol = { assert(isTerm, s"asTerm called on not-a-Term $this" ); asInstanceOf[TermSymbol] }
     final def asType(implicit ctx: Context): TypeSymbol = { assert(isType, s"isType called on not-a-Type $this"); asInstanceOf[TypeSymbol] }
     final def asClass: ClassSymbol = asInstanceOf[ClassSymbol]
