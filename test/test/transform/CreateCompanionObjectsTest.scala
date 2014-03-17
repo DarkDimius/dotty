@@ -28,7 +28,9 @@ class CreateCompanionObjectsTest extends DottyTest {
       implicit val ctx = context
 
       val transformer = new PostTyperTransformer {
-        override def transformations = Array(new CreateCompanionObjects(_, _) {
+        override def transformations = Array(new CreateCompanionObjects {
+
+          override def name: String = "create all companion objects"
           override def predicate(cts: TypeDef)(implicit ctx:Context): Boolean = true
         })
 
@@ -51,7 +53,9 @@ class CreateCompanionObjectsTest extends DottyTest {
     (tree, context) =>
       implicit val ctx = context
       val transformer = new PostTyperTransformer {
-        override def transformations = Array(new CreateCompanionObjects(_, _) {
+        override def transformations = Array(new CreateCompanionObjects {
+
+          override def name: String = "create all companion modules"
           override def predicate(cts: TypeDef)(implicit ctx:Context): Boolean = true
         })
 
@@ -73,7 +77,8 @@ class CreateCompanionObjectsTest extends DottyTest {
     (tree, context) =>
       implicit val ctx = context
       val transformer = new PostTyperTransformer {
-        override def transformations = Array(new CreateCompanionObjects(_, _) {
+        override def transformations = Array(new CreateCompanionObjects {
+          override def name: String = "create all companion modules"
           override def predicate(cts: TypeDef)(implicit ctx:Context): Boolean = true
         })
 
@@ -95,7 +100,8 @@ class CreateCompanionObjectsTest extends DottyTest {
     (tree, context) =>
       implicit val ctx = context
       val transformer = new PostTyperTransformer {
-        override def transformations = Array(new CreateCompanionObjects(_, _) {
+        override def transformations = Array(new CreateCompanionObjects {
+          override def name: String = "create all companion modules"
           override def predicate(cts: TypeDef)(implicit ctx:Context): Boolean = cts.name.toString.contains("CREATE")
         })
 
