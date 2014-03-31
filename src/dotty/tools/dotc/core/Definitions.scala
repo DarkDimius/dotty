@@ -126,12 +126,21 @@ class Definitions {
 
   lazy val AnyValClass: ClassSymbol = ctx.requiredClass("scala.AnyVal")
 
+    lazy val AnyVal_getClass     = AnyValClass.requiredMethod(nme.getClass_)
     lazy val Any_==       = newMethod(AnyClass, nme.EQ, methOfAny(BooleanType), Final)
     lazy val Any_!=       = newMethod(AnyClass, nme.NE, methOfAny(BooleanType), Final)
     lazy val Any_equals   = newMethod(AnyClass, nme.equals_, methOfAny(BooleanType))
     lazy val Any_hashCode = newMethod(AnyClass, nme.hashCode_, ExprType(IntType))
     lazy val Any_toString = newMethod(AnyClass, nme.toString_, ExprType(StringType))
     lazy val Any_##       = newMethod(AnyClass, nme.HASHHASH, ExprType(IntType), Final)
+    lazy val Any_comparisons = Set(Any_==, Any_!=)
+  lazy val getClassMethods =  Set(Any_getClass, AnyVal_getClass)
+  lazy val poundPoundMethods = Set(Any_##, Object_##)
+
+  // Methods intercepted in InterceptedMethods phase
+  lazy val interceptedMethods = getClassMethods ++ poundPoundMethods ++ Any_comparisons
+
+  lazy val primitiveGetClassMethods = Set[Symbol](Any_getClass, AnyVal_getClass) ++ ScalaValueClasses.map(x => x.requiredMethod(nme.getClass_))
 
     // Any_getClass requires special handling.  The return type is determined on
     // a per-call-site basis as if the function being called were actually:
@@ -154,6 +163,7 @@ class Definitions {
     ScalaPackageClass, tpnme.Null, AbstractFinal, List(ObjectClass.typeRef))
 
   lazy val ScalaPredefModule = ctx.requiredModule("scala.Predef")
+  lazy val ScalaRuntimeModule = ctx.requiredModule("scala.runtime.ScalaRunTime")
   lazy val DottyPredefModule = ctx.requiredModule("dotty.DottyPredef")
   lazy val NilModule = ctx.requiredModule("scala.collection.immutable.Nil")
 
@@ -170,14 +180,19 @@ class Definitions {
 
   lazy val UnitClass = valueClassSymbol("scala.Unit", BoxedUnitClass, java.lang.Void.TYPE, UnitEnc)
   lazy val BooleanClass = valueClassSymbol("scala.Boolean", BoxedBooleanClass, java.lang.Boolean.TYPE, BooleanEnc)
-
+    lazy val Boolean_! = BooleanClass.requiredMethod(nme.UNARY_!)
     lazy val Boolean_and = BooleanClass.requiredMethod(nme.ZAND)
-
   lazy val ByteClass = valueClassSymbol("scala.Byte", BoxedByteClass, java.lang.Byte.TYPE, ByteEnc)
   lazy val ShortClass = valueClassSymbol("scala.Short", BoxedShortClass, java.lang.Short.TYPE, ShortEnc)
   lazy val CharClass = valueClassSymbol("scala.Char", BoxedCharClass, java.lang.Character.TYPE, CharEnc)
   lazy val IntClass = valueClassSymbol("scala.Int", BoxedIntClass, java.lang.Integer.TYPE, IntEnc)
   lazy val LongClass = valueClassSymbol("scala.Long", BoxedLongClass, java.lang.Long.TYPE, LongEnc)
+    lazy val Long_XOR_Long = LongClass.info.member(nme.XOR).requiredSymbol(
+      x => (x is Method) && (x.info.firstParamTypes.head isRef defn.LongClass)
+    )
+    lazy val Long_LSR_Int = LongClass.info.member(nme.LSR).requiredSymbol(
+      x => (x is Method) && (x.info.firstParamTypes.head isRef defn.IntClass)
+    )
   lazy val FloatClass = valueClassSymbol("scala.Float", BoxedFloatClass, java.lang.Float.TYPE, FloatEnc)
   lazy val DoubleClass = valueClassSymbol("scala.Double", BoxedDoubleClass, java.lang.Double.TYPE, DoubleEnc)
 
@@ -421,9 +436,7 @@ class Definitions {
 
   // ----- primitive value class machinery ------------------------------------------
 
-  lazy val ScalaValueClasses: collection.Set[Symbol] = Set(
-    UnitClass,
-    BooleanClass,
+  lazy val ScalaNumericValueClasses: collection.Set[Symbol] =  Set(
     ByteClass,
     ShortClass,
     CharClass,
@@ -431,6 +444,8 @@ class Definitions {
     LongClass,
     FloatClass,
     DoubleClass)
+  
+  lazy val ScalaValueClasses: collection.Set[Symbol] = ScalaNumericValueClasses + UnitClass + BooleanClass
 
   lazy val ScalaBoxedClasses = ScalaValueClasses map boxedClass
 
