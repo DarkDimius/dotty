@@ -22,14 +22,14 @@ class DottyTest {
     val base = new ContextBase
     import base.settings._
     val ctx = base.initialCtx.fresh
-      .withSetting(verbose, true)
+      .setSetting(verbose, true)
       //      .withSetting(debug, true)
       //      .withSetting(debugTrace, true)
       //      .withSetting(prompt, true)
-      .withSetting(Ylogcp, true)
-      .withSetting(printtypes, true)
-      .withSetting(pageWidth, 90)
-      .withSetting(log, List("<some"))
+      .setSetting(Ylogcp, true)
+      .setSetting(printtypes, true)
+      .setSetting(pageWidth, 90)
+      .setSetting(log, List("<some"))
     //   .withTyperState(new TyperState(new ConsoleReporter()(base.initialCtx)))
 
     //      .withSetting(uniqid, true)
@@ -41,15 +41,16 @@ class DottyTest {
   private def compilerWithChecker(phase: String)(assertion:(tpd.Tree, Context) => Unit) = new Compiler {
     override def phases = {
       val allPhases = super.phases
-      val targetPhase = allPhases.find{p=> p.name == phase}
-      assert(targetPhase isDefined)
-      val phasesBefore = allPhases.takeWhile(x=> ! (x eq targetPhase.get))
-
-      val checker = new Phase{
+      val targetPhase = allPhases.flatten.find(p => p.name == phase).get
+      val groupsBefore = allPhases.takeWhile(x => !x.contains(targetPhase))
+      val lastGroup = allPhases.find(x => x.contains(targetPhase)).get.takeWhile(x => !(x eq targetPhase))
+      val checker = new Phase {
         def name = "assertionChecker"
         override def run(implicit ctx: Context): Unit = assertion(ctx.compilationUnit.tpdTree, ctx)
       }
-      phasesBefore:::List(targetPhase.get, checker)
+      val lastGroupAppended = List(lastGroup ::: targetPhase :: Nil)
+
+      groupsBefore ::: lastGroupAppended ::: List(List(checker))
     }
   }
 

@@ -384,6 +384,7 @@ object Trees {
   trait DefTree[-T >: Untyped] extends DenotingTree[T] {
     type ThisTree[-T >: Untyped] <: DefTree[T]
     override def isDef = true
+    def namedType = tpe.asInstanceOf[NamedType]
   }
 
   /** Tree defines a new symbol and carries modifiers.
@@ -1077,7 +1078,7 @@ object Trees {
       }
     }
 
-    abstract class TreeTransformer(val cpy: TreeCopier = inst.cpy) {
+    abstract class TreeMap(val cpy: TreeCopier = inst.cpy) {
 
       def transform(tree: Tree)(implicit ctx: Context): Tree = tree match {
         case Ident(name) =>

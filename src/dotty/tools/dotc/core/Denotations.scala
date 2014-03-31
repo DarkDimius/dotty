@@ -11,7 +11,7 @@ import Symbols._
 import Types._
 import Periods._
 import Flags._
-import Transformers._
+import DenotTransformers._
 import Decorators._
 import transform.Erasure
 import printing.Texts._
@@ -19,6 +19,7 @@ import printing.Printer
 import io.AbstractFile
 import config.Config
 import util.common._
+import collection.mutable.ListBuffer
 import Decorators.SymbolIteratorDecorator
 
 /** Denotations represent the meaning of symbols and named types.
@@ -191,6 +192,9 @@ object Denotations {
 
     def requiredValue(name: PreName)(implicit ctx: Context): TermSymbol =
       info.member(name.toTermName).requiredSymbol(_.info.isParameterless).asTerm
+
+    def requiredClass(name: PreName)(implicit ctx: Context): ClassSymbol =
+      info.member(name.toTypeName).requiredSymbol(_.isClass).asClass
 
     /** The denotation that has a type matching `targetType` when seen
      *  as a member of type `site`, `NoDenotation` if none exists.
@@ -387,7 +391,6 @@ object Denotations {
       if ((symbol eq this.symbol) && (info eq this.info)) this
       else newLikeThis(symbol, info)
 
-
     def orElse(that: => SingleDenotation) = if (this.exists) this else that
 
     def altsWith(p: Symbol => Boolean): List[SingleDenotation] =
@@ -457,7 +460,7 @@ object Denotations {
      *  2) the union of all validity periods is a contiguous
      *     interval.
      */
-    var nextInRun: SingleDenotation = this
+    private var nextInRun: SingleDenotation = this
 
     /** The version of this SingleDenotation that was valid in the first phase
      *  of this run.
@@ -466,6 +469,17 @@ object Denotations {
       var current = nextInRun
       while (current.validFor.code > this.myValidFor.code) current = current.nextInRun
       current
+    }
+
+    def history: List[SingleDenotation] = {
+      val b = new ListBuffer[SingleDenotation]
+      var current = initial
+      do {
+        b += (current)
+        current = current.nextInRun
+      }
+      while (current ne initial)
+      b.toList
     }
 
     /** Move validity period of this denotation to a new run. Throw a StaleSymbol error
@@ -499,6 +513,8 @@ object Denotations {
     def current(implicit ctx: Context): SingleDenotation = {
       val currentPeriod = ctx.period
       val valid = myValidFor
+      assert(valid.code > 0, s"negative period $valid: ${valid.code}")
+
       if (valid.runId != currentPeriod.runId) bringForward.current
       else {
         var cur = this
@@ -512,36 +528,47 @@ object Denotations {
           if (next.validFor.code > valid.code) {
             // in this case, next.validFor contains currentPeriod
             cur = next
+            cur
           } else {
+            //println(s"might need new denot for $cur, valid for ${cur.validFor} at $currentPeriod")
             // not found, cur points to highest existing variant
-            var startPid = cur.validFor.lastPhaseId + 1
-            val transformers = ctx.transformersFor(cur)
-            val transformer = transformers.nextTransformer(startPid)
-            next = transformer.transform(cur).syncWithParents
-            if (next eq cur)
-              startPid = cur.validFor.firstPhaseId
+            val nextTransformerId = ctx.nextDenotTransformerId(cur.validFor.lastPhaseId)
+            if (currentPeriod.lastPhaseId <= nextTransformerId)
+              cur.validFor = Period(currentPeriod.runId, cur.validFor.firstPhaseId, nextTransformerId)
             else {
-              next match {
-                case next: ClassDenotation => next.resetFlag(Frozen)
-                case _ =>
+              var startPid = nextTransformerId + 1
+              val transformer = ctx.denotTransformers(nextTransformerId)
+              //println(s"transforming $this with $transformer")
+              next = transformer.transform(cur)(ctx.withPhase(transformer)).syncWithParents
+              if (next eq cur)
+                startPid = cur.validFor.firstPhaseId
+              else {
+                next match {
+                  case next: ClassDenotation => next.resetFlag(Frozen)
+                  case _ =>
+                }
+                next.nextInRun = cur.nextInRun
+                cur.nextInRun = next
+                cur = next
               }
-              cur.nextInRun = next
-              cur = next
+              cur.validFor = Period(currentPeriod.runId, startPid, transformer.lastPhaseId)
+              //println(s"new denot: $cur, valid for ${cur.validFor}")
             }
-            cur.validFor = Period(
-              currentPeriod.runId, startPid, transformer.lastPhaseId)
+            cur.current // multiple transformations could be required
           }
         } else {
-          // currentPeriod < valid; in this case a version must exist
+          // currentPeriod < end of valid; in this case a version must exist
           // but to be defensive we check for infinite loop anyway
           var cnt = 0
           while (!(cur.validFor contains currentPeriod)) {
+            //println(s"searching: $cur at $currentPeriod, valid for ${cur.validFor}")
             cur = cur.nextInRun
             cnt += 1
-            assert(cnt <= MaxPossiblePhaseId, "seems to be a loop in Denotations")
+            assert(cnt <= MaxPossiblePhaseId, s"seems to be a loop in Denotations for $this, currentPeriod = $currentPeriod")
           }
+          cur
         }
-        cur
+
       }
     }
 
@@ -550,7 +577,7 @@ object Denotations {
         case denot: SymDenotation => s"in ${denot.owner}"
         case _ => ""
       }
-      def msg = s"stale symbol; $this#${symbol.id}$ownerMsg, defined in run ${myValidFor.runId}, is referred to in run ${ctx.period.runId}"
+      def msg = s"stale symbol; $this#${symbol.id} $ownerMsg, defined in run ${myValidFor.runId}, is referred to in run ${ctx.runId}"
       throw new StaleSymbol(msg)
     }
 

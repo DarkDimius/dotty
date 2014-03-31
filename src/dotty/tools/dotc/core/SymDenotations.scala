@@ -2,14 +2,14 @@ package dotty.tools.dotc
 package core
 
 import Periods._, Contexts._, Symbols._, Denotations._, Names._, NameOps._, Annotations._
-import Types._, Flags._, Decorators._, Transformers._, StdNames._, Scopes._
+import Types._, Flags._, Decorators._, DenotTransformers._, StdNames._, Scopes._
 import NameOps._
 import Scopes.Scope
 import collection.mutable
 import collection.immutable.BitSet
 import scala.reflect.io.AbstractFile
 import Decorators.SymbolIteratorDecorator
-import ast.tpd
+import ast._
 import annotation.tailrec
 import util.SimpleMap
 import util.Stats
@@ -194,6 +194,18 @@ object SymDenotations {
     /** Does this denotation have an annotation matching the given class symbol? */
     final def hasAnnotation(cls: Symbol)(implicit ctx: Context) =
       dropOtherAnnotations(annotations, cls).nonEmpty
+
+    /** Optionally, the arguments of the first annotation matching the given class symbol */
+    final def getAnnotationArgs(cls: Symbol)(implicit ctx: Context): Option[List[tpd.Tree]] =
+      dropOtherAnnotations(annotations, cls) match {
+        case annot :: _ =>
+          Some(
+            annot.tree match {
+              case Trees.Apply(_, args) => args
+              case _ => Nil
+            })
+        case nil => None
+      }
 
     /** Add given annotation to the annotations of this denotation */
     final def addAnnotation(annot: Annotation): Unit =
@@ -793,8 +805,12 @@ object SymDenotations {
 
     /** The type parameters of this class */
     override final def typeParams(implicit ctx: Context): List[TypeSymbol] = {
-      def computeTypeParams = decls.filter(sym =>
-        (sym is TypeParam) && sym.owner == symbol).asInstanceOf[List[TypeSymbol]]
+      def computeTypeParams = {
+        if (ctx.phase.erasedTypes && (this ne defn.ArrayClass)) Nil
+        else if (this ne initial) initial.asSymDenotation.typeParams
+        else decls.filter(sym =>
+          (sym is TypeParam) && sym.owner == symbol).asInstanceOf[List[TypeSymbol]]
+      }
       if (myTypeParams == null) myTypeParams = computeTypeParams
       myTypeParams
     }
@@ -1198,6 +1214,10 @@ object SymDenotations {
       val cname = if (this is ImplClass) nme.IMPLCLASS_CONSTRUCTOR else nme.CONSTRUCTOR
       decls.denotsNamed(cname).first.symbol
     }
+
+    def underlyingOfValueClass: Type = ???
+
+    def valueClassUnbox: Symbol = ???
   }
 
   /** The denotation of a package class.
@@ -1340,7 +1360,7 @@ object SymDenotations {
       val (location, src) =
         if (file != null) (s" in $file", file.toString)
         else ("", "the signature")
-      val name = ctx.fresh.withSetting(ctx.settings.debugNames, true).nameString(denot.name)
+      val name = ctx.fresh.setSetting(ctx.settings.debugNames, true).nameString(denot.name)
       ctx.error(
         s"""|bad symbolic reference. A signature$location
             |refers to $name in ${denot.owner.showKind} ${denot.owner.showFullName} which is not available.

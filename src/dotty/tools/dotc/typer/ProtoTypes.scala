@@ -38,7 +38,7 @@ object ProtoTypes {
 
     /** Test compatibility after normalization in a fresh typerstate. */
     def normalizedCompatible(tp: Type, pt: Type)(implicit ctx: Context) = {
-      val nestedCtx = ctx.fresh.withExploreTyperState
+      val nestedCtx = ctx.fresh.setExploreTyperState
       isCompatible(normalize(tp, pt)(nestedCtx), pt)(nestedCtx)
     }
 
@@ -79,7 +79,9 @@ object ProtoTypes {
     override def isMatchedBy(tp1: Type)(implicit ctx: Context) = {
       name == nme.WILDCARD || {
         val mbr = tp1.member(name)
-        def qualifies(m: SingleDenotation) = compat.normalizedCompatible(m.info, memberProto)
+        def qualifies(m: SingleDenotation) =
+          memberProto.isRef(defn.UnitClass) ||
+          compat.normalizedCompatible(m.info, memberProto)
         mbr match { // hasAltWith inlined for performance
           case mbr: SingleDenotation => mbr.exists && qualifies(mbr)
           case _ => mbr hasAltWith qualifies
@@ -186,6 +188,20 @@ object ProtoTypes {
       }
       typer.adapt(targ, formal)
     }
+
+    private var myTupled: Type = NoType
+
+    /** The same proto-type but with all arguments combined in a single tuple */
+    def tupled: FunProto = myTupled match {
+      case pt: FunProto =>
+        pt
+      case _ =>
+        myTupled = new FunProto(untpd.Tuple(args) :: Nil, resultType, typer)
+        tupled
+    }
+
+    /** Somebody called the `tupled` method of this prototype */
+    def isTupled: Boolean = myTupled.isInstanceOf[FunProto]
 
     override def toString = s"FunProto(${args mkString ","} => $resultType)"
 

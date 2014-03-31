@@ -170,10 +170,8 @@ class Definitions {
 
   lazy val UnitClass = valueClassSymbol("scala.Unit", BoxedUnitClass, java.lang.Void.TYPE, UnitEnc)
   lazy val BooleanClass = valueClassSymbol("scala.Boolean", BoxedBooleanClass, java.lang.Boolean.TYPE, BooleanEnc)
-
     lazy val Boolean_and = BooleanClass.requiredMethod(nme.ZAND)
     lazy val Boolean_or = BooleanClass.requiredMethod(nme.ZOR)
-
   lazy val ByteClass = valueClassSymbol("scala.Byte", BoxedByteClass, java.lang.Byte.TYPE, ByteEnc)
   lazy val ShortClass = valueClassSymbol("scala.Short", BoxedShortClass, java.lang.Short.TYPE, ShortEnc)
   lazy val CharClass = valueClassSymbol("scala.Char", BoxedCharClass, java.lang.Character.TYPE, CharEnc)
@@ -183,6 +181,7 @@ class Definitions {
   lazy val DoubleClass = valueClassSymbol("scala.Double", BoxedDoubleClass, java.lang.Double.TYPE, DoubleEnc)
 
   lazy val BoxedUnitClass = ctx.requiredClass("scala.runtime.BoxedUnit")
+    lazy val BoxedUnit_UNIT = BoxedUnitClass.linkedClass.requiredValue("UNIT")
   lazy val BoxedBooleanClass = ctx.requiredClass("java.lang.Boolean")
   lazy val BoxedByteClass = ctx.requiredClass("java.lang.Byte")
   lazy val BoxedShortClass = ctx.requiredClass("java.lang.Short")
@@ -196,7 +195,7 @@ class Definitions {
   lazy val EqualsPatternClass     = specialPolyClass(tpnme.EQUALS_PATTERN, EmptyFlags, AnyType)
 
   lazy val RepeatedParamClass     = specialPolyClass(tpnme.REPEATED_PARAM_CLASS, Covariant, SeqType)
-  lazy val JavaRepeatedParamClass = specialPolyClass(tpnme.JAVA_REPEATED_PARAM_CLASS, Covariant, ArrayType)
+  lazy val JavaRepeatedParamClass = specialPolyClass(tpnme.JAVA_REPEATED_PARAM_CLASS, Covariant, ArrayClass.typeRef)
 
   // fundamental classes
   lazy val StringClass                  = ctx.requiredClass("java.lang.String")
@@ -219,12 +218,12 @@ class Definitions {
   lazy val JavaSerializableClass        = ctx.requiredClass("java.lang.Serializable")
   lazy val ComparableClass              = ctx.requiredClass("java.lang.Comparable")
   lazy val ProductClass                 = ctx.requiredClass("scala.Product")
+  lazy val LanguageModuleClass          = ctx.requiredModule("dotty.language").moduleClass.asClass
 
   // Annotation base classes
   lazy val AnnotationClass              = ctx.requiredClass("scala.annotation.Annotation")
   lazy val ClassfileAnnotationClass     = ctx.requiredClass("scala.annotation.ClassfileAnnotation")
   lazy val StaticAnnotationClass        = ctx.requiredClass("scala.annotation.StaticAnnotation")
-  lazy val TailrecClass                 = ctx.requiredClass("scala.annotation.tailrec")
 
   // Annotation classes
   lazy val AliasAnnot = ctx.requiredClass("dotty.annotation.internal.Alias")
@@ -238,6 +237,7 @@ class Definitions {
   lazy val AnnotationDefaultAnnot = ctx.requiredClass("dotty.annotation.internal.AnnotationDefault")
   lazy val ThrowsAnnot = ctx.requiredClass("scala.throws")
   lazy val UncheckedAnnot = ctx.requiredClass("scala.unchecked")
+  lazy val VolatileAnnot = ctx.requiredClass("scala.volatile")
 
   // convenient one-parameter method types
   def methOfAny(tp: Type) = MethodType(List(AnyType), tp)
@@ -253,8 +253,7 @@ class Definitions {
   def NothingType: Type = NothingClass.typeRef
   def NullType: Type = NullClass.typeRef
   def SeqType: Type = SeqClass.typeRef
-  def ArrayType: Type = ArrayClass.typeRef
-  def ObjectArrayType = ArrayType.appliedTo(ObjectType)
+  def ObjectArrayType = ArrayType(ObjectType)
 
   def UnitType: Type = UnitClass.typeRef
   def BooleanType: Type = BooleanClass.typeRef
@@ -271,6 +270,7 @@ class Definitions {
   def JavaRepeatedParamType = JavaRepeatedParamClass.typeRef
   def ThrowableType = ThrowableClass.typeRef
   def OptionType = OptionClass.typeRef
+  def VolatileAnnotType = VolatileAnnot.typeRef
 
   def ClassType(arg: Type)(implicit ctx: Context) = {
     val ctype = ClassClass.typeRef
@@ -288,14 +288,38 @@ class Definitions {
   object FunctionType {
     def apply(args: List[Type], resultType: Type) =
       FunctionClass(args.length).typeRef.appliedTo(args ::: resultType :: Nil)
-    def unapply(ft: Type): Option[(List[Type], Type)] = { // Dotty deviation: Type annotation needed because inferred type
+    def unapply(ft: Type)/*: Option[(List[Type], Type)]*/ = {
+      // -language:keepUnions difference: unapply needs result type because inferred type
                                                           // is Some[(List[Type], Type)] | None, which is not a legal unapply type.
       val tsym = ft.typeSymbol
       lazy val targs = ft.argInfos
       if ((FunctionClasses contains tsym) &&
           (targs.length - 1 <= MaxFunctionArity) &&
-          (FunctionClass(targs.length - 1) == tsym)) Some((targs.init, targs.last)) // Dotty deviation: no auto-tupling
+          (FunctionClass(targs.length - 1) == tsym)) Some(targs.init, targs.last)
       else None
+    }
+  }
+
+  object ArrayType {
+    def apply(elem: Type) =
+      ArrayClass.typeRef.appliedTo(elem :: Nil)
+    def unapply(tp: Type) = tp.dealias match {
+      case at: RefinedType if (at isRef ArrayClass) && at.argInfos.length == 1 => Some(at.argInfos.head)
+      case _ => None
+    }
+  }
+
+  object MultiArrayType {
+    def apply(elem: Type, ndims: Int): Type =
+      if (ndims == 0) elem else ArrayType(apply(elem, ndims - 1))
+    def unapply(tp: Type): Option[(Type, Int)] = tp match {
+      case ArrayType(elemtp) =>
+        elemtp match {
+          case MultiArrayType(finalElemTp, n) => Some(finalElemTp, n + 1)
+          case _ => Some(elemtp, 1)
+        }
+      case _ =>
+        None
     }
   }
 
@@ -360,12 +384,6 @@ class Definitions {
    */
   def hkTrait(vcs: List[Int]) = {
 
-    def varianceSuffix(v: Int) = v match {
-      case -1 => "N"
-      case  0 => "I"
-      case  1 => "P"
-    }
-
     def varianceFlags(v: Int) = v match {
       case -1 => Contravariant
       case  0 => Covariant
@@ -376,14 +394,13 @@ class Definitions {
       def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
         val cls = denot.asClass.classSymbol
         val paramDecls = newScope
-        for ((v, i) <- vcs.zipWithIndex)
-          newTypeParam(cls, tpnme.higherKindedParamName(i), varianceFlags(v), paramDecls)
+        for (i <- 0 until vcs.length)
+          newTypeParam(cls, tpnme.higherKindedParamName(i), EmptyFlags, paramDecls)
         denot.info = ClassInfo(ScalaPackageClass.thisType, cls, List(ObjectClass.typeRef), paramDecls)
       }
     }
 
-    val traitName =
-      tpnme.higherKindedTraitName(vcs.length) ++ (vcs map varianceSuffix).mkString
+    val traitName = tpnme.higherKindedTraitName(vcs)
 
     def createTrait = {
       val cls = newClassSymbol(
@@ -398,7 +415,7 @@ class Definitions {
     hkTraitOfArity.getOrElseUpdate(vcs, createTrait)
   }
 
-  // ----- Value class machinery ------------------------------------------
+  // ----- primitive value class machinery ------------------------------------------
 
   lazy val ScalaValueClasses: collection.Set[Symbol] = Set(
     UnitClass,
@@ -410,6 +427,7 @@ class Definitions {
     LongClass,
     FloatClass,
     DoubleClass)
+  lazy val ScalaBoxedClasses = ScalaValueClasses map boxedClass
 
   private[this] val _boxedClass = mutable.Map[Symbol, Symbol]()
   private[this] val _unboxedClass = mutable.Map[Symbol, Symbol]()

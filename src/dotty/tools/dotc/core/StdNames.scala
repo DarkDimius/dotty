@@ -221,6 +221,7 @@ object StdNames {
     val FAKE_LOCAL_THIS: N          = "this$"
     val IMPLCLASS_CONSTRUCTOR: N    = "$init$"
     val LAZY_LOCAL: N               = "$lzy"
+    val LAZY_FIELD_OFFSET: N        = "OFFSET$"
     val LAZY_SLOW_SUFFIX: N         = "$lzycompute"
     val LOCAL_SUFFIX: N             = " "
     val UNIVERSE_BUILD_PREFIX: N    = "$u.build."
@@ -247,6 +248,7 @@ object StdNames {
     val SPECIALIZED_INSTANCE: N     = "specInstance$"
     val THIS: N                     = "_$this"
     val HK_PARAM_PREFIX: N          = "_$hk$"
+    val HK_TRAIT_PREFIX: N          = "$HigherKinded$"
 
     final val Nil: N                = "Nil"
     final val Predef: N             = "Predef"
@@ -280,7 +282,6 @@ object StdNames {
     val ConstantType: N         = "ConstantType"
     val ExistentialTypeTree: N  = "ExistentialTypeTree"
     val Flag : N                = "Flag"
-    val HigherKinded: N         = "HigherKinded"
     val Ident: N                = "Ident"
     val Import: N               = "Import"
     val Literal: N              = "Literal"
@@ -374,6 +375,7 @@ object StdNames {
     val hashCode_ : N           = "hashCode"
     val hash_ : N               = "hash"
     val head: N                 = "head"
+    val higherKinds: N          = "higherKinds"
     val identity: N             = "identity"
     val implicitly: N           = "implicitly"
     val in: N                   = "in"
@@ -386,6 +388,7 @@ object StdNames {
     val isInstanceOf_ : N       = "isInstanceOf"
     val isInstanceOf_Ob : N     = "$isInstanceOf"
     val java: N                 = "java"
+    val keepUnions: N           = "keepUnions"
     val key: N                  = "key"
     val lang: N                 = "lang"
     val length: N               = "length"
@@ -414,6 +417,7 @@ object StdNames {
     val next: N                 = "next"
     val nmeNewTermName: N       = "newTermName"
     val nmeNewTypeName: N       = "newTypeName"
+    val noAutoTupling: N        = "noAutoTupling"
     val normalize: N            = "normalize"
     val notifyAll_ : N          = "notifyAll"
     val notify_ : N             = "notify"
@@ -641,10 +645,14 @@ object StdNames {
     def syntheticTypeParamNames(num: Int): List[TypeName] =
       (0 until num).map(syntheticTypeParamName)(breakOut)
 
-    def higherKindedTraitName(n: Int) = HigherKinded ++ n.toString
+    def higherKindedTraitName(vcs: List[Int]): TypeName = HK_TRAIT_PREFIX ++ vcs.map(varianceSuffix).mkString
     def higherKindedParamName(n: Int) = HK_PARAM_PREFIX ++ n.toString
 
     final val Conforms = encode("<:<")
+
+    def varianceSuffix(v: Int): Char = varianceSuffixes.charAt(v + 1)
+
+    val varianceSuffixes = "NIP"
   }
 
   abstract class JavaNames[N <: Name] extends DefinedNames[N] {

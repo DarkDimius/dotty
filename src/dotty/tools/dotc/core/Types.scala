@@ -102,15 +102,30 @@ object Types {
     }
 
     /** Is this type an instance of a non-bottom subclass of the given class `cls`? */
-    final def derivesFrom(cls: Symbol)(implicit ctx: Context): Boolean =
-      classSymbol.derivesFrom(cls)
+    final def derivesFrom(cls: Symbol)(implicit ctx: Context): Boolean = this match {
+      case tp: TypeRef =>
+        val sym = tp.symbol
+        if (sym.isClass) sym.derivesFrom(cls) else tp.underlying.derivesFrom(cls)
+      case tp: TypeProxy =>
+        tp.underlying.derivesFrom(cls)
+      case tp: AndType =>
+        tp.tp1.derivesFrom(cls) || tp.tp2.derivesFrom(cls)
+      case tp: OrType =>
+        tp.tp1.derivesFrom(cls) && tp.tp2.derivesFrom(cls)
+      case _ =>
+        false
+    }
 
    /** A type T is a legal prefix in a type selection T#A if
      *  T is stable or T contains no abstract types
      *  !!! Todo: What about non-final vals that contain abstract types?
      */
     final def isLegalPrefix(implicit ctx: Context): Boolean =
-      isStable || memberNames(abstractTypeNameFilter).isEmpty
+      isStable || {
+        val absTypeNames = memberNames(abstractTypeNameFilter)
+        if (absTypeNames.nonEmpty) typr.println(s"abstract type members of ${this.showWithUnderlying()}: $absTypeNames")
+        absTypeNames.isEmpty
+      }
 
     /** Is this type guaranteed not to have `null` as a value?
      *  For the moment this is only true for modules, but it could
@@ -254,6 +269,7 @@ object Types {
 
     /** The base classes of this type as determined by ClassDenotation
      *  in linearization order, with the class itself as first element.
+     *  For AndTypes/OrTypes, the union/intersection of the operands' baseclasses.
      *  Inherited by all type proxies. `Nil` for all other types.
      */
     final def baseClasses(implicit ctx: Context): List[ClassSymbol] = track("baseClasses") {
@@ -262,6 +278,10 @@ object Types {
           tp.underlying.baseClasses
         case tp: ClassInfo =>
           tp.cls.baseClasses
+        case AndType(tp1, tp2) =>
+          tp1.baseClasses union tp2.baseClasses
+        case OrType(tp1, tp2) =>
+          tp1.baseClasses intersect tp2.baseClasses
         case _ => Nil
       }
     }
@@ -605,11 +625,11 @@ object Types {
      *
      *  to just U
      */
-    def lookupRefined(pre: Type, name: Name)(implicit ctx: Context): Type = pre.stripTypeVar match {
+    def lookupRefined(name: Name)(implicit ctx: Context): Type = stripTypeVar match {
       case pre: RefinedType =>
-        if (pre.refinedName ne name) lookupRefined(pre.parent, name)
+        if (pre.refinedName ne name) pre.parent.lookupRefined(name)
         else pre.refinedInfo match {
-          case TypeBounds(lo, hi) if lo eq hi => hi
+          case TypeBounds(lo, hi) /*if lo eq hi*/ => hi
           case _ => NoType
         }
       case pre: WildcardType =>
@@ -623,7 +643,7 @@ object Types {
       case name: TermName =>
         TermRef(this, name)
       case name: TypeName =>
-        val res = lookupRefined(this, name)
+        val res = lookupRefined(name)
         if (res.exists) res else TypeRef(this, name)
     }
 
@@ -632,7 +652,7 @@ object Types {
       case name: TermName =>
         TermRef(this, name, denot)
       case name: TypeName =>
-        val res = lookupRefined(this, name)
+        val res = lookupRefined(name)
         if (res.exists) res else TypeRef(this, name, denot)
     }
 
@@ -640,7 +660,7 @@ object Types {
     def select(sym: Symbol)(implicit ctx: Context): Type =
       if (sym.isTerm) TermRef(this, sym.asTerm)
       else {
-        val res = lookupRefined(this, sym.name)
+        val res = lookupRefined(sym.name)
         if (res.exists) res else TypeRef(this, sym.asType)
       }
 
@@ -682,6 +702,13 @@ object Types {
     final def paramTypess: List[List[Type]] = this match {
       case mt: MethodType => mt.paramTypes :: mt.resultType.paramTypess
       case pt: PolyType => pt.resultType.paramTypess
+      case _ => Nil
+    }
+
+    /** The parameter types in the first parameter section of a PolyType or MethodType, Empty list for others */
+    final def firstParamTypes: List[Type] = this match {
+      case mt: MethodType => mt.paramTypes
+      case pt: PolyType => pt.resultType.firstParamTypes
       case _ => Nil
     }
 
@@ -788,6 +815,14 @@ object Types {
     /** Convert to text */
     def toText(printer: Printer): Text = printer.toText(this)
 
+    /** Utility method to show the underlying type of a TypeProxy chain together
+     *  with the proxy type itself.
+     */
+    def showWithUnderlying(n: Int = 1)(implicit ctx: Context): String = this match {
+      case tp: TypeProxy if n > 0 => s"$show with underlying ${tp.underlying.showWithUnderlying(n - 1)}"
+      case _ => show
+    }
+
     type VarianceMap = SimpleMap[TypeVar, Integer]
 
     /** All occurrences of type vars in this type that satisfy predicate
@@ -821,6 +856,19 @@ object Types {
      *  maps poly params in the current constraint set back to their type vars.
      */
     def simplified(implicit ctx: Context) = ctx.simplify(this, null)
+
+    /** Approximations of union types: We replace a union type Tn | ... | Tn
+     *  by the smallest intersection type of baseclass instances of T1,...,Tn.
+     *  Example: Given
+     *
+     *      trait C[+T]
+     *      trait D
+     *      class A extends C[A] with D
+     *      class B extends C[B] with D with E
+     *
+     *  we approximate `A | B` by `C[A | B] with D`
+     */
+    def approximateUnion(implicit ctx: Context) = ctx.approximateUnion(this)
 
     /** customized hash code of this type.
      *  NotCached for uncached types. Cached types
@@ -980,7 +1028,7 @@ object Types {
           val sym = lastSymbol
           if (sym == null) loadDenot else denotOfSym(sym)
         case d: SymDenotation =>
-          if (ctx.stillValid(d)) d.current
+          if (d.validFor.runId == ctx.runId || ctx.stillValid(d)) d.current
           else {
             val newd = loadDenot
             if (newd.exists) newd else d.staleSymbolError
@@ -1018,14 +1066,11 @@ object Types {
       if (d.exists || ctx.phaseId == FirstPhaseId)
         d
       else {// name has changed; try load in earlier phase and make current
-        val d = denot(ctx.fresh.withPhase(ctx.phaseId - 1)).current
+        val d = denot(ctx.withPhase(ctx.phaseId - 1)).current
         if (d.exists) d
         else throw new Error(s"failure to reload $this")
       }
     }
-
-    def isType = name.isTypeName
-    def isTerm = name.isTermName
 
     def symbol(implicit ctx: Context): Symbol = {
       val now = ctx.period
@@ -1035,6 +1080,9 @@ object Types {
     }
 
     def info(implicit ctx: Context): Type = denot.info
+
+    def isType = isInstanceOf[TypeRef]
+    def isTerm = isInstanceOf[TermRef]
 
     /** Guard against cycles that can arise if given `op`
      *  follows info. The prblematic cases are a type alias to itself or
@@ -1066,7 +1114,7 @@ object Types {
     def derivedSelect(prefix: Type)(implicit ctx: Context): Type =
       if (prefix eq this.prefix) this
       else {
-        val res = lookupRefined(prefix, name)
+        val res = prefix.lookupRefined(name)
         if (res.exists) res else newLikeThis(prefix)
       }
 
@@ -1261,12 +1309,13 @@ object Types {
       lazy val underlyingTypeParams = parent.safeUnderlyingTypeParams
       lazy val originalTypeParam = underlyingTypeParams(refinedName.hkParamIndex)
 
-      /** drop any co/contra variance in refined info if variance disagrees
-       *  with new type param
+      /** Use variance of newly instantiated type parameter rather than the old hk argument
        */
-      def adjustedHKRefinedInfo(hkBounds: TypeBounds) = {
-        if (hkBounds.variance == originalTypeParam.info.bounds.variance) hkBounds
-        else TypeBounds(hkBounds.lo, hkBounds.hi)
+      def adjustedHKRefinedInfo(hkBounds: TypeBounds, underlyingTypeParam: TypeSymbol) = hkBounds match {
+        case tp @ TypeBounds(lo, hi) if lo eq hi =>
+          tp.derivedTypeBounds(lo, hi, underlyingTypeParam.variance)
+        case _ =>
+          hkBounds
       }
 
       if ((parent eq this.parent) && (refinedName eq this.refinedName) && (refinedInfo eq this.refinedInfo))
@@ -1275,7 +1324,8 @@ object Types {
  //            && { println(s"deriving $refinedName $parent $underlyingTypeParams"); true }
                && refinedName.hkParamIndex < underlyingTypeParams.length
                && originalTypeParam.name != refinedName)
-        derivedRefinedType(parent, originalTypeParam.name, adjustedHKRefinedInfo(refinedInfo.bounds))
+        derivedRefinedType(parent, originalTypeParam.name,
+            adjustedHKRefinedInfo(refinedInfo.bounds, underlyingTypeParams(refinedName.hkParamIndex)))
       else
         RefinedType(parent, refinedName, rt => refinedInfo.substThis(this, RefinedThis(rt)))
     }
@@ -1331,6 +1381,10 @@ object Types {
     def derivedAndType(tp1: Type, tp2: Type)(implicit ctx: Context): Type =
       if ((tp1 eq this.tp1) && (tp2 eq this.tp2)) this
       else AndType.make(tp1, tp2)
+
+    def derived_& (tp1: Type, tp2: Type)(implicit ctx: Context): Type =
+      if ((tp1 eq this.tp1) && (tp2 eq this.tp2)) this
+      else tp1 & tp2
 
     def derivedAndOrType(tp1: Type, tp2: Type)(implicit ctx: Context): Type =
       derivedAndType(tp1, tp2)
@@ -1391,7 +1445,7 @@ object Types {
 
     protected def resultSignature(implicit ctx: Context) = resultType match {
       case rtp: SignedType => rtp.signature
-      case tp => Signature(tp)
+      case tp => Signature(tp, isJava = false)
     }
 
     final override def signature(implicit ctx: Context): Signature = {
@@ -1442,7 +1496,7 @@ object Types {
     }
 
     protected def computeSignature(implicit ctx: Context): Signature =
-      paramTypes ++: resultSignature
+      resultSignature.prepend(paramTypes, isJava)
 
     def derivedMethodType(paramNames: List[TermName], paramTypes: List[Type], restpe: Type)(implicit ctx: Context) =
       if ((paramNames eq this.paramNames) && (paramTypes eq this.paramTypes) && (restpe eq this.resultType)) this
@@ -1712,10 +1766,38 @@ object Types {
         case OrType(tp1, tp2) => isSingleton(tp1) & isSingleton(tp2)
         case _ => false
       }
+      def isFullyDefined(tp: Type): Boolean = tp match {
+        case tp: TypeVar => tp.isInstantiated && isFullyDefined(tp.instanceOpt)
+        case tp: TypeProxy => isFullyDefined(tp.underlying)
+        case tp: AndOrType => isFullyDefined(tp.tp1) && isFullyDefined(tp.tp2)
+        case _ => true
+      }
+      def isOrType(tp: Type): Boolean = tp.stripTypeVar.dealias match {
+        case tp: OrType => true
+        case AndType(tp1, tp2) => isOrType(tp1) | isOrType(tp2)
+        case RefinedType(parent, _) => isOrType(parent)
+        case WildcardType(bounds: TypeBounds) => isOrType(bounds.hi)
+        case _ => false
+      }
+
+      // First, solve the constraint.
       var inst = ctx.typeComparer.approximation(origin, fromBelow)
+
+      // Then, approximate by (1.) and (2.) and simplify as follows.
+      // 1. If instance is from below and is a singleton type, yet
+      // upper bound is not a singleton type, widen the instance.
       if (fromBelow && isSingleton(inst) && !isSingleton(upperBound))
         inst = inst.widen
-      instantiateWith(inst.simplified)
+
+      inst = inst.simplified
+
+      // 2. If instance is from below and is a fully-defined union type, yet upper bound
+      // is not a union type, approximate the union type from above by an intersection
+      // of all common base types.
+      if (fromBelow && isOrType(inst) && isFullyDefined(inst) && !isOrType(upperBound))
+        inst = inst.approximateUnion
+
+      instantiateWith(inst)
     }
 
     /** Unwrap to instance (if instantiated) or origin (if not), until result
@@ -1844,7 +1926,10 @@ object Types {
       if (lo eq tp) this
       else TypeAlias(tp, variance)
 
-    def contains(tp: Type)(implicit ctx: Context) = lo <:< tp && tp <:< hi
+    def contains(tp: Type)(implicit ctx: Context) = tp match {
+      case tp: TypeBounds => lo <:< tp.lo && tp.hi <:< hi
+      case _ => lo <:< tp && tp <:< hi
+    }
 
     def & (that: TypeBounds)(implicit ctx: Context): TypeBounds = {
       val v = this commonVariance that
@@ -1856,7 +1941,7 @@ object Types {
 
     def | (that: TypeBounds)(implicit ctx: Context): TypeBounds = {
       val v = this commonVariance that
-      if (v == 0 && (this.lo eq this.hi) && (that.lo eq that.hi))
+      if (v != 0 && (this.lo eq this.hi) && (that.lo eq that.hi))
         if (v > 0) derivedTypeAlias(this.hi | that.hi, v)
         else derivedTypeAlias(this.lo & that.lo, v)
       else derivedTypeBounds(this.lo & that.lo, this.hi | that.hi, v)
@@ -2026,6 +2111,8 @@ object Types {
         zeroParamClass(tp.underlying)
       case tp: RefinedType =>
         zeroParamClass(tp.underlying)
+      case tp: TypeBounds =>
+        zeroParamClass(tp.underlying)
       case tp: TypeVar =>
         zeroParamClass(tp.underlying)
       case _ =>
@@ -2169,7 +2256,7 @@ object Types {
       annot.derivedAnnotation(mapOver(annot.tree))
 
     def mapOver(tree: Tree): Tree =
-      new TreeMapper(this).apply(tree)
+      new TreeTypeMap(this).apply(tree)
 
     /** Can be overridden. By default, only the prefix is mapped. */
     protected def mapClassInfo(tp: ClassInfo): ClassInfo =
@@ -2215,7 +2302,7 @@ object Types {
       case tp: TypeRef =>
         if (stopAtStatic && tp.symbol.isStatic) x
         else {
-          val tp1 = tp.lookupRefined(tp.prefix, tp.name)
+          val tp1 = tp.prefix.lookupRefined(tp.name)
           this(x, if (tp1.exists) tp1 else tp.prefix)
         }
       case tp: TermRef =>
@@ -2337,7 +2424,15 @@ object Types {
   /** A filter for names of abstract types of a given type */
   object abstractTypeNameFilter extends NameFilter {
     def apply(pre: Type, name: Name)(implicit ctx: Context): Boolean =
-      name.isTypeName && ((pre member name).symbol is Deferred)
+      name.isTypeName && {
+        val mbr = pre.member(name)
+        (mbr.symbol is Deferred) && {
+          mbr.info match {
+            case TypeBounds(lo, hi) => lo ne hi
+            case _ => false
+          }
+        }
+      }
   }
 
   /** A filter for names of deferred term definitions of a given type */

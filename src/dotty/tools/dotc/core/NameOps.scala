@@ -168,6 +168,27 @@ object NameOps {
       }
     }
 
+    /** The variances of the higherKinded parameters of the trait named
+     *  by this name.
+     *  @pre The name is a higher-kinded trait name, i.e. it starts with HK_TRAIT_PREFIX
+     */
+    def hkVariances: List[Int] = {
+      def varianceOfSuffix(suffix: Char): Int = {
+        val idx = tpnme.varianceSuffixes.indexOf(suffix)
+        assert(idx >= 0)
+        idx - 1
+      }
+      name.drop(tpnme.HK_TRAIT_PREFIX.length).toList.map(varianceOfSuffix)
+    }
+
+    /** The name of the generic runtime operation corresponding to an array operation */
+    def genericArrayOp: TermName = name match {
+      case nme.apply => nme.array_apply
+      case nme.length => nme.array_length
+      case nme.update => nme.array_update
+      case nme.clone_ => nme.array_clone
+    }
+
     /** If name length exceeds allowable limit, replace part of it by hash */
     def compactified(implicit ctx: Context): TermName = termName(compactify(name.toString))
   }

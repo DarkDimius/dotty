@@ -5,7 +5,7 @@ package ast
 import core._
 import util.Positions._, Types._, Contexts._, Constants._, Names._, Flags._
 import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._
-import CheckTrees._, Denotations._
+import CheckTrees._, Denotations._, Decorators._
 import config.Printers._
 
 /** Some creators for typed trees */
@@ -165,6 +165,9 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   def ValDef(sym: TermSymbol, rhs: Tree = EmptyTree)(implicit ctx: Context): ValDef =
     ta.assignType(untpd.ValDef(Modifiers(sym), sym.name, TypeTree(sym.info), rhs), sym)
 
+  def SyntheticValDef(name: TermName, rhs: Tree)(implicit ctx: Context): ValDef =
+    ValDef(ctx.newSymbol(ctx.owner, name, Synthetic, rhs.tpe, coord = rhs.pos), rhs)
+  
   def DefDef(sym: TermSymbol, rhs: Tree = EmptyTree)(implicit ctx: Context): DefDef =
     ta.assignType(DefDef(sym, Function.const(rhs) _), sym)
 
@@ -234,8 +237,15 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       case pre => SelectFromTypeTree(TypeTree(pre), tp)
     } // no checks necessary
 
-  def ref(sym: Symbol)(implicit ctx: Context): tpd.NameTree =
+  def ref(sym: Symbol)(implicit ctx: Context): NameTree =
     ref(NamedType(sym.owner.thisType, sym.name, sym.denot))
+
+  def singleton(tp: Type)(implicit ctx: Context): Tree = tp match {
+    case tp: TermRef => ref(tp)
+    case ThisType(cls) => This(cls)
+    case SuperType(qual, _) => singleton(qual)
+    case ConstantType(value) => Literal(value)
+  }
 
   // ------ Creating typed equivalents of trees that exist only in untyped form -------
 
@@ -308,12 +318,6 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def isValue(implicit ctx: Context): Boolean =
       tree.isTerm && tree.tpe.widen.isValueType
 
-    def currentClass(implicit ctx: Context) = {
-      def enclosingClass(sym: Symbol): Symbol =
-        if (sym.isClass || sym == NoSymbol) sym else enclosingClass(sym.owner)
-      enclosingClass(tree.symbol)
-    }
-
     def isValueOrPattern(implicit ctx: Context) =
       tree.isValue || tree.isPattern
 
@@ -336,11 +340,14 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def deepFold[T](z: T)(op: (T, tpd.Tree) => T) =
       new DeepFolder(op).apply(z, tree)
 
+    def find[T](pred: (tpd.Tree) => Boolean): Option[tpd.Tree] =
+      shallowFold[Option[tpd.Tree]](None)((accum, tree) => if (pred(tree)) Some(tree) else accum)
+
     def subst(from: List[Symbol], to: List[Symbol])(implicit ctx: Context): ThisTree =
-      new TreeMapper(typeMap = new ctx.SubstSymMap(from, to)).apply(tree)
+      new TreeTypeMap(typeMap = new ctx.SubstSymMap(from, to)).apply(tree)
 
     def changeOwner(from: Symbol, to: Symbol)(implicit ctx: Context): ThisTree =
-      new TreeMapper(ownerMap = (sym => if (sym == from) to else sym)).apply(tree)
+      new TreeTypeMap(ownerMap = (sym => if (sym == from) to else sym)).apply(tree)
 
     def appliedToTypes(targs: List[Type])(implicit ctx: Context): Tree =
       if (targs.isEmpty) tree else TypeApply(tree, targs map (TypeTree(_)))
@@ -350,7 +357,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def tpes: List[Type] = xs map (_.tpe)
   }
 
-  class TreeMapper(val typeMap: TypeMap = IdentityTypeMap, val ownerMap: Symbol => Symbol = identity _)(implicit ctx: Context) extends TreeTransformer {
+  class TreeTypeMap(val typeMap: TypeMap = IdentityTypeMap, val ownerMap: Symbol => Symbol = identity _)(implicit ctx: Context) extends TreeMap {
     override def transform(tree: tpd.Tree)(implicit ctx: Context): tpd.Tree = super.transform {
       tree.withType(typeMap(tree.tpe)) match {
         case bind: tpd.Bind =>
@@ -381,17 +388,31 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
 
     /** The current tree map composed with a substitution [from -> to] */
     def withSubstitution(from: List[Symbol], to: List[Symbol]) =
-      new TreeMapper(
+      new TreeTypeMap(
         typeMap andThen ((tp: Type) => tp.substSym(from, to)),
         ownerMap andThen (from zip to).toMap)
   }
-
-  def deriveDefDef(ddef: Tree)(applyToRhs: Tree => Tree): DefDef = ddef match {
-    case DefDef(mods0, name0, tparams0, vparamss0, tpt0, rhs0) =>
-      cpy.DefDef(ddef, mods0, name0, tparams0, vparamss0, tpt0, applyToRhs(rhs0))
-    case t =>
-      sys.error("Not a DefDef: " + t + "/" + t.getClass)
+  // convert a numeric with a toXXX method
+  def numericConversion(tree: Tree, numericCls: Symbol)(implicit ctx: Context): Tree = {
+    val mname      = ("to" + numericCls.name).toTermName
+    val conversion = tree.tpe member mname
+    assert(conversion.symbol.exists, s"$tree => $numericCls")
+    ensureApplied(Select(tree, conversion.symbol.termRef))
   }
+
+  def evalOnce(tree: Tree)(within: Tree => Tree)(implicit ctx: Context) = {
+    if (isIdempotentExpr(tree)) within(tree)
+    else {
+      val vdef = SyntheticValDef(ctx.freshName("ev$").toTermName, tree)
+      Block(vdef :: Nil, within(Ident(vdef.namedType)))
+    }
+  }
+
+  def runtimeCall(name: TermName, args: List[Tree])(implicit ctx: Context): Tree = ???
+
+  def mkAnd(tree1: Tree, tree2: Tree)(implicit ctx: Context) =
+    Apply(Select(tree1, defn.Boolean_and), tree2 :: Nil)
+
   // ensure that constructors are fully applied?
   // ensure that normal methods are fully applied?
 

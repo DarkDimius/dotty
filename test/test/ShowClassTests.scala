@@ -42,8 +42,8 @@ class ShowClassTests extends DottyTest {
     "dotty.tools.dotc.core.pickling.AbstractFileReader")
 
   def doTwice(test: Context => Unit)(implicit ctx: Context): Unit = {
-    test(ctx.fresh.withSetting(ctx.base.settings.debug, true))
-    test(ctx.fresh.withSetting(ctx.base.settings.debug, false))
+    test(ctx.fresh.setSetting(ctx.base.settings.debug, true))
+    test(ctx.fresh.setSetting(ctx.base.settings.debug, false))
   }
 
   def showPackage(pkg: TermSymbol)(implicit ctx: Context): Unit = {
@@ -66,7 +66,7 @@ class ShowClassTests extends DottyTest {
     showPackage(ctx.requiredPackage(path))
     val nstubs = Symbols.stubs.length
     debug_println(s"$nstubs stubs")
-    assert(nstubs <= expectedStubs, s"stubs found $nstubs, expected: $expectedStubs")
+    assert(nstubs <= expectedStubs, s"stubs found: $nstubs, expected: $expectedStubs\nstubs: ${Symbols.stubs.mkString(",")}")
   }
 
   def showClass(cls: Symbol)(implicit ctx: Context) = {
