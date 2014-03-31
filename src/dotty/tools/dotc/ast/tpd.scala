@@ -167,7 +167,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
 
   def SyntheticValDef(name: TermName, rhs: Tree)(implicit ctx: Context): ValDef =
     ValDef(ctx.newSymbol(ctx.owner, name, Synthetic, rhs.tpe, coord = rhs.pos), rhs)
-  
+
   def DefDef(sym: TermSymbol, rhs: Tree = EmptyTree)(implicit ctx: Context): DefDef =
     ta.assignType(DefDef(sym, Function.const(rhs) _), sym)
 
@@ -306,6 +306,9 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       } else foldOver(sym, tree)
   }
 
+  def ensureApplied(fn: Tree)(implicit ctx: Context): Tree =
+    if (fn.tpe.widen.isParameterless) fn else Apply(fn, Nil)
+
   override val cpy = new TypedTreeCopier
 
   class TypedTreeCopier extends TreeCopier {
@@ -317,6 +320,10 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
 
     def isValue(implicit ctx: Context): Boolean =
       tree.isTerm && tree.tpe.widen.isValueType
+
+    def enclClass(implicit ctx: Context) = {
+      tree.symbol.enclClass
+    }
 
     def isValueOrPattern(implicit ctx: Context) =
       tree.isValue || tree.isPattern
@@ -411,10 +418,43 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   def runtimeCall(name: TermName, args: List[Tree])(implicit ctx: Context): Tree = ???
 
   def mkAnd(tree1: Tree, tree2: Tree)(implicit ctx: Context) =
-    Apply(Select(tree1, defn.Boolean_and), tree2 :: Nil)
+    Apply(Select(tree1, defn.Boolean_and.termRef), tree2 :: Nil)
 
+  def deriveDefDef(ddef: Tree)(applyToRhs: Tree => Tree): DefDef = ddef match {
+    case DefDef(mods0, name0, tparams0, vparamss0, tpt0, rhs0) =>
+      cpy.DefDef(ddef, mods0, name0, tparams0, vparamss0, tpt0, applyToRhs(rhs0))
+    case t =>
+      sys.error("Not a DefDef: " + t + "/" + t.getClass)
+  }
+
+  def deriveCaseDef(cdef: Tree)(applyToBody: Tree => Tree): CaseDef = cdef match {
+    case CaseDef(pat0, guard0, body0) =>
+      cpy.CaseDef(cdef, pat0, guard0, applyToBody(body0))
+    case t =>
+      sys.error("Not a CaseDef: " + t + "/" + t.getClass)
+  }
+
+  def deriveValDef(vdef: Tree)(applyToRhs: Tree => Tree): ValDef = vdef match {
+    case ValDef(mods0, name0, tpt0, rhs0) =>
+      cpy.ValDef(vdef, mods0, name0, tpt0, applyToRhs(rhs0))
+    case t =>
+      sys.error("Not a ValDef: " + t + "/" + t.getClass)
+  }
+
+  def deriveTemplate(templ: Tree)(applyToBody: List[Tree] => List[Tree]): Template = templ match {
+    case Template(consrt, parents0, self0, body0) =>
+      cpy.Template(templ, consrt, parents0, self0, applyToBody(body0))
+    case t =>
+      sys.error("Not a Template: " + t + "/" + t.getClass)
+  }
+
+  def deriveTypeDef(cdef: Tree)(applyToImpl: Tree => Tree): TypeDef = cdef match {
+    case TypeDef(mods0, name0, impl0) =>
+      cpy.TypeDef(cdef, mods0, name0, applyToImpl(impl0))
+    case t =>
+      sys.error("Not a ClassDef: " + t + "/" + t.getClass)
+  }
   // ensure that constructors are fully applied?
   // ensure that normal methods are fully applied?
-
 }
 

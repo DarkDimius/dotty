@@ -108,7 +108,7 @@ object Erasure {
               // via the unboxed type would yield a NPE (see SI-5866)
               unbox(tree, underlying)
             else
-              Apply(Select(adaptToType(tree, clazz.typeRef), clazz.valueClassUnbox), Nil)
+              Apply(Select(adaptToType(tree, clazz.typeRef), clazz.valueClassUnbox.termRef), Nil)
           cast(tree1, pt)
         case _ =>
           val cls = pt.classSymbol
@@ -131,7 +131,7 @@ object Erasure {
           cast(runtimeCall(nme.toObjectArray, tree :: Nil), pt)
         case _ =>
           println(s"casting from ${tree.showSummary}: ${tree.tpe.show} to ${pt.show}")
-          TypeApply(Select(tree, defn.Object_asInstanceOf), TypeTree(pt) :: Nil)
+          TypeApply(Select(tree, defn.Object_asInstanceOf.termRef), TypeTree(pt) :: Nil)
       }
 
     /** Adaptation of an expression `e` to an expected type `PT`, applying the following
