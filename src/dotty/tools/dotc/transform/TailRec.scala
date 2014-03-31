@@ -156,7 +156,7 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
       }
       def containsRecursiveCall(t: Tree) = new TreeAccumulator[Boolean] {
         override def apply(x: Boolean, tree: tpd.Tree): Boolean = x || isRecursiveCall(tree)
-      }
+      }.apply(false, t)
     }
     class ClonedTailContext(that: TailContext, override val tailPos: Boolean) extends TailContext {
       def method     = that.method
@@ -187,7 +187,7 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
 
     override def transform(tree: Tree): Tree = {
       /* A possibly polymorphic apply to be considered for tail call transformation. */
-      def rewriteApply(target: Tree, fun: Tree, targs: List[Tree], args: List[Tree]) = {
+      def rewriteApply(target: Tree, fun: Tree, targs: List[Tree], args: List[Tree]): Tree = {
         val receiver: Tree = fun match {
           case Select(qual, _)  => qual
           case _                => EmptyTree // todo: ???
@@ -203,13 +203,14 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
          */
         def fail(reason: String) = {
           c.debuglog("Cannot rewrite recursive call at: " + fun.pos + " because: " + reason)
+          ???
         }
         /* Position of failure is that of the tree being considered. */
         def failHere(reason: String) = {
           fail(reason)
         }
         def rewriteTailCall(recv: Tree): Tree = {
-          c.debuglog("Rewriting tail recursive call:  " + fun.pos.lineContent.trim)
+          c.debuglog("Rewriting tail recursive call:  " + fun.pos)
           accessed += ctx.label
           ???
           /*
@@ -224,7 +225,7 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
           else                          failHere(defaultReason)
         }
         else if (!matchesTypeArgs)      failHere("it is called recursively with different type arguments")
-        else if (receiver == EmptyTree) rewriteTailCall(This(currentClass))
+        else if (receiver == EmptyTree) rewriteTailCall(This(c.enclClass.tree.symbol.asClass))
         else if (!receiverIsSame)       failHere("it changes type of 'this' on a polymorphic recursive call")
         else                            rewriteTailCall(receiver)
       }
@@ -236,7 +237,7 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
 
           super.transform(tree)
 
-        case dd @ DefDef(_, name, _, vparamss0, _, rhs0) if !dd.symbol.hasAccessorFlag =>
+        case dd @ DefDef(_, name, _, vparamss0, _, rhs0) if !(dd.symbol is Flags.Accessor) =>
           val newCtx = new DefDefTailContext(dd)
           if (newCtx.isMandatory && !(newCtx containsRecursiveCall rhs0))
             c.error("@tailrec annotated method contains no recursive calls", tree.pos)
@@ -258,13 +259,13 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
               val newThis = newCtx.newThis(tree.pos)
               val vpSyms  = vparamss0.flatten map (_.symbol)
 
-              typedPos(tree.pos)(Block(
-                List(ValDef(newThis, This(currentClass))),
+              Block(
+                List(ValDef(newThis, This(c.enclClass.tree.symbol.asClass))),
                 LabelDef(newCtx.label, newThis :: vpSyms, mkAttributedCastHack(newRHS, newCtx.label.tpe.resultType))
-              ))
+              ).addPos(tree.pos)
             }
             else {
-              if (newCtx.isMandatory && (newCtx containsRecursiveCall newRHS))
+              if (newCtx.isMandatory && newCtx.containsRecursiveCall(newRHS))
                 tailrecFailure(newCtx)
 
               newRHS
@@ -309,7 +310,7 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
 
         case Try(block, catches, finalizer @ EmptyTree) =>
           // SI-1672 Catches are in tail position when there is no finalizer
-          treeCopy.Try(tree,
+          tpd.cpy.Try(tree,
             noTailTransform(block),
             transformTrees(catches).asInstanceOf[List[CaseDef]],
             EmptyTree
@@ -317,7 +318,7 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
 
         case Try(block, catches, finalizer) =>
            // no calls inside a try are in tail position if there is a finalizer, but keep recursing for nested functions
-          treeCopy.Try(tree,
+          tpd.cpy.Try(tree,
             noTailTransform(block),
             noTailTransforms(catches).asInstanceOf[List[CaseDef]],
             noTailTransform(finalizer)
@@ -326,14 +327,14 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
         case Apply(tapply @ TypeApply(fun, targs), vargs) =>
           rewriteApply(tapply, fun, targs, vargs)
 
-        case Apply(fun, args) if fun.symbol == Boolean_or || fun.symbol == Boolean_and =>
-          treeCopy.Apply(tree, fun, transformTrees(args))
+        case Apply(fun, args) if fun.symbol == defn.Boolean_or || fun.symbol == defn.Boolean_and =>
+          tpd.cpy.Apply(tree, fun, transformTrees(args))
 
         // this is to detect tailcalls in translated matches
         // it's a one-argument call to a label that is in a tailposition and that looks like label(x) {x}
         // thus, the argument to the call is in tailposition
-        case Apply(fun, args @ (arg :: Nil)) if fun.symbol.isLabel && ctx.tailLabels(fun.symbol) =>
-          debuglog(s"in tailpos label: $arg")
+        case Apply(fun, args @ (arg :: Nil)) if (fun.symbol.flags is Flags.Label) && ctx.tailLabels(fun.symbol) =>
+          c.debuglog(s"in tailpos label: $arg")
           val res = yesTailTransform(arg)
           // we tail-called -- TODO: shield from false-positives where we rewrite but don't tail-call
           // must leave the jump to the original tailpos-label (fun)!
@@ -345,11 +346,11 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
 
         case Apply(fun, args) =>
           rewriteApply(fun, fun, Nil, args)
-        case Alternative(_) | Star(_) | Bind(_, _) =>
+        case Alternative(_) | Bind(_, _) =>
           sys.error("We should've never gotten inside a pattern")
         case Select(qual, name) =>
-          treeCopy.Select(tree, noTailTransform(qual), name)
-        case EmptyTree | Super(_, _) | This(_) | Ident(_) | Literal(_) | Function(_, _) | TypeTree() =>
+          tpd.cpy.Select(tree, noTailTransform(qual), name)
+        case EmptyTree | Super(_, _) | This(_) | Ident(_) | Literal(_) |  TypeTree(_) =>
           tree
         case _ =>
           super.transform(tree)
@@ -360,7 +361,9 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform(g
     // These leave us with conflicting view on method signatures; the parameter symbols in
     // the MethodType can be clones of the ones originally found on the parameter ValDef, and
     // consequently appearing in the typechecked RHS of the method.
-    private def mkAttributedCastHack(tree: Tree, tpe: Type) =
-      gen.mkAttributedCast(tree, tpe)
+    private def mkAttributedCastHack(tree: Tree, tpe: Type) = ???
+      ///gen.mkAttributedCast(tree, tpe)
+    def transformTrees(trees: List[Tree]): List[Tree] =
+        if (trees.isEmpty) Nil else trees mapConserve transform
   }
 

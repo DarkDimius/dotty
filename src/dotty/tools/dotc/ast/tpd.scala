@@ -386,6 +386,12 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
         ownerMap andThen (from zip to).toMap)
   }
 
+  def deriveDefDef(ddef: Tree)(applyToRhs: Tree => Tree): DefDef = ddef match {
+    case DefDef(mods0, name0, tparams0, vparamss0, tpt0, rhs0) =>
+      cpy.DefDef(ddef, mods0, name0, tparams0, vparamss0, tpt0, applyToRhs(rhs0))
+    case t =>
+      sys.error("Not a DefDef: " + t + "/" + t.getClass)
+  }
   // ensure that constructors are fully applied?
   // ensure that normal methods are fully applied?
 

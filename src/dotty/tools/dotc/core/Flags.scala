@@ -437,6 +437,10 @@ object Flags {
   /** The flags of a type parameter */
   final val TypeParamCreationFlags = TypeParam | Deferred | Protected | Local
 
+  // used in the symbols for labeldefs and valdefs emitted by the pattern matcher
+  // tailcalls, cps,... use this flag combination to detect translated matches
+  final val Synthetic_Case  = Case | Synthetic
+
   /** Flags that can apply to both a module val and a module class, except those that
     *  are added at creation anyway
     */

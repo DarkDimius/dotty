@@ -230,6 +230,14 @@ object Contexts {
       c
     }
 
+    /** The next outer context whose tree is a TypeDef */
+    def enclClass: Context = {
+      var c = this
+      while (c != NoContext && !c.tree.isInstanceOf[TypeDef])
+        c = c.outer
+      c
+    }
+
     /** The current source file; will be derived from current
      *  compilation unit.
      */
