@@ -7,6 +7,7 @@ import util.Positions._, Types._, Contexts._, Constants._, Names._, Flags._
 import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._
 import CheckTrees._, Denotations._, Decorators._
 import config.Printers._
+import typer.ErrorReporting._
 
 /** Some creators for typed trees */
 object tpd extends Trees.Instance[Type] with TypedTreeInfo {
@@ -266,7 +267,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
    *
    *  gets expanded to
    *
-   *     <module> lazy val obj = new obj$
+   *     <module> val obj = new obj$
    *     <module> class obj$ extends parents { this: obj.type => decls }
    *
    *  (The following no longer applies:
@@ -400,11 +401,17 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
         ownerMap andThen (from zip to).toMap)
   }
   // convert a numeric with a toXXX method
-  def numericConversion(tree: Tree, numericCls: Symbol)(implicit ctx: Context): Tree = {
+  def primitiveConversion(tree: Tree, numericCls: Symbol)(implicit ctx: Context): Tree = {
     val mname      = ("to" + numericCls.name).toTermName
     val conversion = tree.tpe member mname
-    assert(conversion.symbol.exists, s"$tree => $numericCls")
-    ensureApplied(Select(tree, conversion.symbol.termRef))
+    if (conversion.symbol.exists)
+      ensureApplied(Select(tree, conversion.symbol.termRef))
+    else if (tree.tpe.widen isRef numericCls)
+      tree
+    else {
+      ctx.warning(i"conversion from ${tree.tpe.widen} to ${numericCls.typeRef} will always fail at runtime.")
+      Throw(New(defn.ClassCastExceptionClass.typeRef, Nil)) withPos tree.pos
+    }
   }
 
   def evalOnce(tree: Tree)(within: Tree => Tree)(implicit ctx: Context) = {

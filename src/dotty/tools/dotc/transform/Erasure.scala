@@ -109,7 +109,7 @@ object Erasure {
               // via the unboxed type would yield a NPE (see SI-5866)
               unbox(tree, underlying)
             else
-              Apply(Select(adaptToType(tree, clazz.typeRef), clazz.valueClassUnbox.termRef), Nil)
+              Apply(Select(adaptToType(tree, clazz.typeRef), clazz.valueClassUnbox), Nil)
           cast(tree1, pt)
         case _ =>
           val cls = pt.classSymbol
@@ -131,8 +131,8 @@ object Erasure {
           // See SI-2386 for one example of when this might be necessary.
           cast(runtimeCall(nme.toObjectArray, tree :: Nil), pt)
         case _ =>
-          println(s"casting from ${tree.showSummary}: ${tree.tpe.show} to ${pt.show}")
-          TypeApply(Select(tree, defn.Object_asInstanceOf.termRef), TypeTree(pt) :: Nil)
+          ctx.log(s"casting from ${tree.showSummary}: ${tree.tpe.show} to ${pt.show}")
+          TypeApply(Select(tree, defn.Object_asInstanceOf), TypeTree(pt) :: Nil)
       }
 
     /** Adaptation of an expression `e` to an expected type `PT`, applying the following
@@ -159,23 +159,16 @@ object Erasure {
         cast(tree, pt)
   }
 
-  class Typer extends typer.Typer with NoChecking {
+  class Typer extends typer.ReTyper with NoChecking {
     import Boxing._
 
-    def erasedType(tree: untpd.Tree)(implicit ctx: Context): Type =
-     erasure(tree.tpe.asInstanceOf[Type])
+    def erasedType(tree: untpd.Tree)(implicit ctx: Context): Type = erasure(tree.typeOpt)
 
-    private def promote(tree: untpd.Tree)(implicit ctx: Context): tree.ThisTree[Type] = {
+    override def promote(tree: untpd.Tree)(implicit ctx: Context): tree.ThisTree[Type] = {
       assert(tree.hasType)
       val erased = erasedType(tree)(ctx.withPhase(ctx.erasurePhase))
       ctx.log(s"promoting ${tree.show}: ${erased.showWithUnderlying()}")
       tree.withType(erased)
-    }
-
-    override def typedIdent(tree: untpd.Ident, pt: Type)(implicit ctx: Context): Tree = {
-      val tree1 = promote(tree)
-      println(i"typed ident ${tree.name}: ${tree1.tpe} at phase ${ctx.phase}, history = ${tree1.symbol.history}")
-      tree1
     }
 
     /** Type check select nodes, applying the following rewritings exhaustively
@@ -227,8 +220,16 @@ object Erasure {
       recur(typed(tree.qualifier, AnySelectionProto))
     }
 
-    override def typedTypeApply(tree: untpd.TypeApply, pt: Type)(implicit ctx: Context) =
-      typedExpr(tree.fun, pt)
+    override def typedTypeApply(tree: untpd.TypeApply, pt: Type)(implicit ctx: Context) = {
+      val TypeApply(fun, args) = tree
+      val fun1 = typedExpr(fun, pt)
+      fun1.tpe.widen match {
+        case funTpe: PolyType =>
+          val args1 = args.mapconserve(typedType(_))
+          untpd.cpy.TypeApply(tree, fun1, args1).withType(funTpe.instantiate(args1.tpes))
+        case _ => fun1
+      }
+    }
 
     override def typedApply(tree: untpd.Apply, pt: Type)(implicit ctx: Context): Tree = {
       val Apply(fun, args) = tree
@@ -254,15 +255,12 @@ object Erasure {
       super.typedDefDef(ddef1, sym)
     }
 
-    override def typedClassDef(cdef: untpd.TypeDef, sym: ClassSymbol)(implicit ctx: Context) = {
-      val TypeDef(mods, name, impl @ Template(constr, parents, self, body)) = cdef
-      val cdef1 = untpd.cpy.TypeDef(cdef, mods, name,
-        untpd.cpy.Template(impl, constr, parents, untpd.EmptyValDef, body))
-      super.typedClassDef(cdef1, sym)
-    }
+    override def typedTypeDef(tdef: untpd.TypeDef, sym: Symbol)(implicit ctx: Context) =
+      EmptyTree
 
-    override def typedStats(stats: List[untpd.Tree], exprOwner: Symbol)(implicit ctx: Context): List[tpd.Tree] = {
-      val stats1 = super.typedStats(stats, exprOwner)
+     /*
+    override def transformStats(stats: List[Tree], exprOwner: Symbol)(implicit ctx: Context) = {
+      val stats1 = super.transform(stats, exprOwner)
       if (ctx.owner.isClass) addBridges(stats1) else stats1
     }
     def addBridges(stats1: List[tpd.Tree])  = stats1
@@ -301,7 +299,7 @@ object Erasure {
          *  @param  member   The original member
          *  @param  other    The overidden symbol for which the bridge was generated
          *  @param  bridge   The bridge
-         */
+*/
        def checkBridgeOverrides(member: Symbol, other: Symbol, bridge: Symbol): Seq[(Position, String)] = {
          def fulldef(sym: Symbol) =
            if (sym == NoSymbol) sym.toString
