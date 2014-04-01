@@ -15,7 +15,7 @@ import Decorators._
 import Trees._
 import dotty.tools.dotc.transform.TreeTransforms.{TreeTransform, TreeTransformer}
 import dotty.tools.dotc.transform.PostTyperTransformers.PostTyperTransformer
-import dotty.tools.dotc.transform.{CreateCompanionObjects, TailRec}
+import dotty.tools.dotc.transform.{CreateCompanionObjects}
 
 
 class CreateCompanionObjectsTest extends DottyTest {

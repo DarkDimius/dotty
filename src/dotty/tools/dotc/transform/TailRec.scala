@@ -24,14 +24,56 @@ import dotty.tools.dotc.ast.tpd.TreeAccumulator
 
 /** A transformer that provides a convenient way to create companion objects
   */
+/*
 abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform {
 
   import tpd._
   import tpd.TreeAccumulator
 
-  override def transformDefDef(tree: tpd.DefDef)(implicit ctx: Context, info: TransformerInfo): tpd.Tree = {
+  private val eliminator = new TailCallElimination()
 
-    tree
+  override def transformDefDef(tree: tpd.DefDef)(implicit ctx: Context, info: TransformerInfo): tpd.Tree = {
+    tree match {
+      case dd@DefDef(_, name, _, vparamss0, _, rhs0) if !(dd.symbol is Flags.Accessor) =>
+        val newCtx = new eliminator.DefDefTailContext(dd)
+        if (newCtx.isMandatory && !(newCtx containsRecursiveCall rhs0))
+          ctx.error("@tailrec annotated method contains no recursive calls", tree.pos)
+
+        val newRHS = eliminator.transform(rhs0, newCtx)
+
+        deriveDefDef(tree) {
+          rhs =>
+            if (newCtx.isTransformed) {
+              /* We have rewritten the tree, but there may be nested recursive calls remaining.
+           * If @tailrec is given we need to fail those now.
+           */
+              if (newCtx.isMandatory) {
+                for (t <- newRHS) //TODO: what it means
+                  t match {
+                    case Apply(fn, _) if (fn.symbol == newCtx.method) =>
+                      t
+                      eliminator.failPositions(newCtx) = t
+                      eliminator.tailrecFailure(newCtx)
+                    case _ =>
+                  }
+              }
+              val newThis = newCtx.newThis(tree.symbol.owner)
+              val vpSyms = vparamss0.flatten map (_.symbol)
+
+              tpd.Closure(newCtx.label.asTerm, args => EmptyTree)
+              /*Block(
+            List(ValDef(newThis, This(tree.enclClass))),
+            LabelDef(newCtx.label, newThis :: vpSyms, mkAttributedCastHack(newRHS, newCtx.label.tpe.resultType))
+          ).addPos(tree.pos)*/
+            }
+            else {
+              if (newCtx.isMandatory && newCtx.containsRecursiveCall(newRHS))
+                eliminator.tailrecFailure(newCtx)
+
+              newRHS
+            }
+        }
+    }
   }
 }
 
@@ -86,15 +128,15 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform {
    *            parameter lists exit.
    * </p>
    */
-  class TailCallElimination(unit: CompilationUnit)(implicit c:Context) extends tpd.TreeMap {
+  class TailCallElimination extends tpd.TreeMap {
     import tpd._
     private def defaultReason = "it contains a recursive call not in tail position"
 
     /** Has the label been accessed? Then its symbol is in this set. */
     private var accessed = Set[Symbol]()
-    private val failPositions = mutable.HashMap[TailContext, Position]() withDefault (_.methodPos)
-    private val failReasons   = mutable.HashMap[TailContext, String]() withDefaultValue defaultReason
-    private def tailrecFailure(ctx: TailContext) {
+    val failPositions = mutable.HashMap[TailContext, Position]() withDefault (_.methodPos)
+    val failReasons   = mutable.HashMap[TailContext, String]() withDefaultValue defaultReason
+    def tailrecFailure(ctx: TailContext)(implicit c: Context) {
       val method      = ctx.method
       val failReason  = failReasons(ctx)
       val failPos     = failPositions(ctx)
@@ -119,7 +161,7 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform {
       def isMandatory   = method.hasAnnotation(defn.TailrecClass)
       def isTransformed = isEligible && accessed(label)
 
-      def newThis(owner:Symbol) = {
+      def newThis(owner:Symbol)(implicit c: Context) = {
         c.newSymbol(owner, nme.THIS, Flags.Synthetic, enclosingType)
       }
       override def toString = s"${method.name} tparams=$tparams tailPos=$tailPos label=$label label info=${label.info}"
@@ -141,7 +183,7 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform {
 
       lazy val label:TermSymbol      = mkLabel()
 
-      private def mkLabel() = {
+      private def mkLabel()(implicit c: Context) = {
         val name = c.freshName("tailLabel")
         val origMethodType = method.info.asInstanceOf[MethodType]
 
@@ -189,7 +231,7 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform {
       trees map (t => transform(t, nctx))
     }
 
-    override def transform(tree: Tree): Tree = {
+    override def transform(tree: Tree)(implicit c: Context): Tree = {
       /* A possibly polymorphic apply to be considered for tail call transformation. */
       def rewriteApply(target: Tree, fun: Tree, targs: List[Tree], args: List[Tree]): Tree = {
         val receiver: Tree = fun match {
@@ -238,45 +280,8 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform {
 
           super.transform(tree)
 
-        case dd @ DefDef(_, name, _, vparamss0, _, rhs0) if !(dd.symbol is Flags.Accessor) =>
-          val newCtx = new DefDefTailContext(dd)
-          if (newCtx.isMandatory && !(newCtx containsRecursiveCall rhs0))
-            c.error("@tailrec annotated method contains no recursive calls", tree.pos)
-
-          val newRHS = transform(rhs0, newCtx)
-
-          deriveDefDef(tree) { rhs =>
-            if (newCtx.isTransformed) {
-              /* We have rewritten the tree, but there may be nested recursive calls remaining.
-               * If @tailrec is given we need to fail those now.
-               */
-              if (newCtx.isMandatory) {
-                for (t <- newRHS) //TODO: what it means
-                  t match {
-                    case Apply(fn, _) if (fn.symbol == newCtx.method) =>
-                      t
-                      failPositions(newCtx) = t
-                      tailrecFailure(newCtx)
-                    case _ =>
-                  }
-              }
-              val newThis = newCtx.newThis(tree.symbol.owner)
-              val vpSyms  = vparamss0.flatten map (_.symbol)
-
-              tpd.Closure(ctx.label.asTerm, args => EmptyTree )
-              /*Block(
-                List(ValDef(newThis, This(tree.enclClass))),
-                LabelDef(newCtx.label, newThis :: vpSyms, mkAttributedCastHack(newRHS, newCtx.label.tpe.resultType))
-              ).addPos(tree.pos)*/
-            }
-            else {
-              if (newCtx.isMandatory && newCtx.containsRecursiveCall(newRHS))
-                tailrecFailure(newCtx)
-
-              newRHS
-            }
-          }
-
+        case t:DefDef =>
+          t
         case Block(stats, expr) =>
           tpd.cpy.Block(tree,
             noTailTransforms(stats),
@@ -345,3 +350,4 @@ abstract class TailRec(group: TreeTransformer, idx: Int) extends TreeTransform {
         if (trees.isEmpty) Nil else trees mapConserve transform
   }
 
+*/
