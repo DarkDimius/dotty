@@ -14,7 +14,7 @@ import dotty.tools.asm
 import ast.Trees._
 import core.Contexts.Context
 import core.Flags
-import core.Types.Type
+import dotty.tools.dotc.core.Types._
 import core.StdNames
 import core.Symbols.{Symbol, NoSymbol}
 import core.SymDenotations._
@@ -77,7 +77,7 @@ abstract class BCodeBodyBuilder extends BCodeSkelBuilder {
       lineNumber(tree)
       tree match {
         case Assign(lhs @ Select(_, _), rhs) =>
-          val isStatic = lhs.symbol.isStaticMember
+          val isStatic = lhs.symbol.isStatic
           if (!isStatic) { genLoadQualifier(lhs) }
           genLoad(rhs, symInfoTK(lhs.symbol))
           lineNumber(tree)
@@ -239,9 +239,10 @@ abstract class BCodeBodyBuilder extends BCodeSkelBuilder {
     def getPrimitive(fun: Symbol, tpe: Type): Int = {
       val code = scalaPrimitives.getPrimitive(fun)
 
-      def elementType = enteringTyper {
+      def elementType = ctx.atPhaseNotLaterThanTyper { c=>
+        implicit  val ctx = c
         val arrayParent = tpe :: tpe.parents collectFirst {
-          case dotc.core.Types.TypeRef(_, ctx.definitions.ArrayClass, elem :: Nil) => elem
+          case TypeRef(_, ctx.definitions.ArrayClass, elem :: Nil) => elem
         }
         arrayParent getOrElse sys.error(fun.fullName + " : " + (tpe :: tpe.baseTypeSeq.toList).mkString(", "))
       }
@@ -382,7 +383,7 @@ abstract class BCodeBodyBuilder extends BCodeSkelBuilder {
           generatedType = genThrow(expr)
 
         case New(tpt) =>
-          abort(s"Unexpected New(${tpt.summaryString}/$tpt) reached GenBCode.\n" +
+          abort(s"Unexpected New(${tpt.show}/$tpt) reached GenBCode.\n" +
                 "  Call was genLoad" + ((tree, expectedType)))
 
         case app : Apply =>
@@ -421,7 +422,7 @@ abstract class BCodeBodyBuilder extends BCodeSkelBuilder {
             genLoadQualUnlessElidable()
             genLoadModule(tree)
           }
-          else if (sym.isStaticMember) {
+          else if (sym.isStatic) {
             genLoadQualUnlessElidable()
             fieldLoad(sym, hostClass)
           }

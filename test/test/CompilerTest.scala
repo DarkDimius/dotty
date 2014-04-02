@@ -3,7 +3,7 @@ package test
 import scala.reflect.io._
 import org.junit.Test
 import scala.collection.mutable.ListBuffer
-import dotty.tools.dotc.Main
+import dotty.tools.dotc.{Main, Bench, Driver}
 import dotty.tools.dotc.reporting.Reporter
 
 class CompilerTest extends DottyTest {
@@ -11,7 +11,9 @@ class CompilerTest extends DottyTest {
   def defaultOptions: List[String] = Nil
 
   def compileArgs(args: Array[String], xerrors: Int = 0): Unit = {
-    val nerrors = Main.process(args ++ defaultOptions).count(Reporter.ERROR.level)
+    val allArgs = args ++ defaultOptions
+    val processor = if (allArgs.exists(_.startsWith("#"))) Bench else Main
+    val nerrors = processor.process(allArgs).count(Reporter.ERROR.level)
     assert(nerrors == xerrors, s"Wrong # of errors. Expected: $xerrors, found: $nerrors")
   }
 
@@ -20,12 +22,26 @@ class CompilerTest extends DottyTest {
   def compileFile(prefix: String, fileName: String, args: List[String] = Nil, xerrors: Int = 0): Unit =
     compileArgs((s"$prefix$fileName.scala" :: args).toArray, xerrors)
 
-  def compileDir(path: String, args: List[String] = Nil, xerrors: Int = 0): Unit = {
-    val dir = Directory(path)
+  def compileDir(path: String, args: List[String] = Nil, xerrors: Int = 0): Unit =
+    compileDir(Directory(path), args, xerrors)
+
+  def compileDir(dir: Directory, args: List[String], xerrors: Int): Unit = {
     val fileNames = dir.files.toArray.map(_.toString).filter(_ endsWith ".scala")
     compileArgs(fileNames ++ args, xerrors)
   }
 
+  def compileFiles(path: String, args: List[String] = Nil): Unit = {
+    val dir = Directory(path)
+    val fileNames = dir.files.toArray.map(_.toString).filter(_ endsWith ".scala")
+    for (name <- fileNames) {
+      println(s"testing $name")
+      compileArgs((name :: args).toArray, 0)
+    }
+    for (subdir <- dir.dirs) {
+      println(s"testing $subdir")
+      compileDir(subdir, args, 0)
+    }
+  }
 }
 object CompilerText extends App {
 

@@ -1,0 +1,15 @@
+language: scala
+script:
+  - sbt -Ddotty.travis.build=yes update compile test
+jdk:
+  - oraclejdk7
+notifications:
+  email:
+    - dotty-reports@googlegroups.com
+branches:
+  only:
+    - master
+before_install:
+  - cd ..
+  - git clone https://github.com/scala/scala.git
+  - cd dotty

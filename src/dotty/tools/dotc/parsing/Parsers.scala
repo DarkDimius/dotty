@@ -12,16 +12,14 @@ import core._
 import Flags._
 import Contexts._
 import Names._
-import ast.Trees._, ast.TreeInfo
+import ast.Trees._
 import Decorators._
 import StdNames._
 import util.Positions._
-import Types._
 import Constants._
-import NameOps._
-import util.Chars._
 import ScriptParsers._
 import annotation.switch
+import util.DotClass
 
 object Parsers {
 
@@ -808,7 +806,7 @@ object Parsers {
 
     def typeDependingOn(location: Location.Value): Tree =
       if (location == Location.InParens) typ()
-      else if (location == Location.InPattern) withType()
+      else if (location == Location.InPattern) refinedType()
       else infixType()
 
 /* ----------- EXPRESSIONS ------------------------------------------------ */
@@ -1048,9 +1046,12 @@ object Parsers {
         case NEW =>
           canApply = false
           val start = in.skipToken()
-          templateOrNew(emptyConstructor()) match {
-            case impl: Template => atPos(start) { New(impl) }
-            case nu => adjustStart(start) { nu }
+          val (impl, missingBody) = template(emptyConstructor())
+          impl.parents match {
+            case parent :: Nil if missingBody =>
+              if (parent.isType) ensureApplied(wrapNew(parent)) else parent
+            case _ =>
+              New(impl)
           }
         case _ =>
           if (isLiteral) literal()
@@ -1823,38 +1824,36 @@ object Parsers {
 
     /** ConstrApp         ::=  SimpleType {ParArgumentExprs}
      */
-    val constrApp = () =>
-      ensureApplied(parArgumentExprss(wrapNew(simpleType())))
+    val constrApp = () => {
+      val t = simpleType()
+      if (in.token == LPAREN) parArgumentExprss(wrapNew(t))
+      else t
+    }
 
     /** Template          ::=  ConstrApps [TemplateBody] | TemplateBody
      *  ConstrApps        ::=  ConstrApp {`with' ConstrApp}
+     *
+     *  @return  a pair consisting of the template, and a boolean which indicates
+     *           whether the template misses a body (i.e. no {...} part).
      */
-    def template(constr: DefDef): Template = templateOrNew(constr) match {
-      case impl: Template => impl
-      case parent => Template(constr, parent :: Nil, EmptyValDef, Nil)
-    }
-
-    /** Same as template, but if {...} is missing and there's only one
-     *  parent return the parent instead of a template. Called from New.
-     */
-    def templateOrNew(constr: DefDef): Tree = {
+    def template(constr: DefDef): (Template, Boolean) = {
       newLineOptWhenFollowedBy(LBRACE)
-      if (in.token == LBRACE) templateBodyOpt(constr, Nil)
+      if (in.token == LBRACE) (templateBodyOpt(constr, Nil), false)
       else {
         val parents = tokenSeparated(WITH, constrApp)
         newLineOptWhenFollowedBy(LBRACE)
-        if (in.token != LBRACE && parents.length == 1) parents.head
-        else templateBodyOpt(constr, parents)
+        val missingBody = in.token != LBRACE
+        (templateBodyOpt(constr, parents), missingBody)
       }
     }
 
     /** TemplateOpt = [`extends' Template | TemplateBody]
      */
     def templateOpt(constr: DefDef): Template =
-      if (in.token == EXTENDS) { in.nextToken(); template(constr) }
+      if (in.token == EXTENDS) { in.nextToken(); template(constr)._1 }
       else {
         newLineOptWhenFollowedBy(LBRACE)
-        if (in.token == LBRACE) template(constr)
+        if (in.token == LBRACE) template(constr)._1
         else Template(constr, Nil, EmptyValDef, Nil).withPos(constr.pos.toSynthetic)
       }
 
@@ -2072,6 +2071,7 @@ object Parsers {
 
       topstats() match {
         case List(stat @ PackageDef(_, _)) => stat
+        case Nil => EmptyTree  // without this case we'd get package defs without positions
         case stats => PackageDef(Ident(nme.EMPTY_PACKAGE), stats)
       }
     }

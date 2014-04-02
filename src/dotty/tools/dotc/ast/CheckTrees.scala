@@ -6,6 +6,7 @@ import core._
 import util.Positions._, Types._, Contexts._, Constants._, Names._, Flags._
 import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._
 
+// TODO: revise, integrate in a checking phase.
 object CheckTrees {
 
   import tpd._
@@ -19,7 +20,7 @@ object CheckTrees {
 
   def escapingRefs(block: Block)(implicit ctx: Context): collection.Set[NamedType] = {
     var hoisted: Set[Symbol] = Set()
-    lazy val locals = localSyms(block.stats).toSet
+    lazy val locals = ctx.typeAssigner.localSyms(block.stats).toSet
     def isLocal(sym: Symbol): Boolean =
       (locals contains sym) && !isHoistableClass(sym)
     def isHoistableClass(sym: Symbol) =
@@ -135,7 +136,7 @@ object CheckTrees {
       check(finalizer.isTerm)
       check(handler.isTerm)
       check(handler.tpe derivesFrom defn.FunctionClass(1))
-      check(handler.tpe.baseTypeArgs(defn.FunctionClass(1)).head <:< defn.ThrowableType)
+      check(handler.tpe.baseArgInfos(defn.FunctionClass(1)).head <:< defn.ThrowableType)
     case Throw(expr) =>
       check(expr.isValue)
       check(expr.tpe.derivesFrom(defn.ThrowableClass))
@@ -177,7 +178,7 @@ object CheckTrees {
           checkRefinements(forbidden - rsym, rs1)
         case nil =>
       }
-      checkRefinements(localSyms(refinements).toSet, refinements)
+      checkRefinements(ctx.typeAssigner.localSyms(refinements).toSet, refinements)
     case AppliedTypeTree(tpt, args) =>
       check(tpt.isValueType)
       val tparams = tpt.tpe.typeParams
@@ -210,9 +211,9 @@ object CheckTrees {
             check(args.isEmpty)
           else {
             check(rtp isRef defn.OptionClass)
-            val normArgs = rtp.typeArgs match {
+            val normArgs = rtp.argTypesHi match {
               case optionArg :: Nil =>
-                optionArg.typeArgs match {
+                optionArg.argTypesHi match {
                   case Nil =>
                     optionArg :: Nil
                   case tupleArgs if defn.isTupleType(optionArg) =>
@@ -251,8 +252,6 @@ object CheckTrees {
       check(annot.symbol.owner.isSubClass(defn.AnnotationClass))
       check(arg.isValueType || arg.isValue)
     case EmptyTree =>
-    case SharedTree(shared) =>
-      check(shared.isType || shared.isTerm)
   }
 }
 

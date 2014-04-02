@@ -1,6 +1,7 @@
 package dotty.tools.dotc.util
 
 import reflect.ClassTag
+import annotation.tailrec
 
 /** A least-recently-used cache for Key -> Value computations
  *  It currently keeps the last 8 associations, but this can be
@@ -14,7 +15,7 @@ import reflect.ClassTag
  *  get promoted to be first in the queue. Elements are evicted
  *  at the `last` position.
  */
-class LRUCache[Key >: Null : ClassTag, Value >: Null: ClassTag] {
+class LRUCache[Key >: Null <: AnyRef : ClassTag, Value >: Null: ClassTag] {
   import LRUCache._
   val keys = new Array[Key](Retained)
   val values = new Array[Value](Retained)
@@ -29,9 +30,10 @@ class LRUCache[Key >: Null : ClassTag, Value >: Null: ClassTag] {
    *  if key was not found.
    */
   def lookup(key: Key): Value = {
+    @tailrec
     def lookupNext(prev: Int, current: Int, nx: SixteenNibbles): Value = {
       val follow = nx(current)
-      if (keys(current) == key) {
+      if (keys(current) eq key) {
         // arrange so that found element is at position `first`.
         if (current == last) last = prev
         else if (prev != last) {
@@ -89,7 +91,7 @@ class LRUCache[Key >: Null : ClassTag, Value >: Null: ClassTag] {
 object LRUCache {
 
   /** The number of retained elements in the cache; must be at most 16. */
-  val Retained = 8
+  val Retained = 16
 
   /** The initial ring: 0 -> 1 -> ... -> 7 -> 0 */
   val initialRing =

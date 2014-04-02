@@ -8,6 +8,7 @@ import collection.mutable
 import printing.{Printer, Showable}
 import printing.Texts._
 import config.Config
+import config.Printers._
 
 /** Constraint over undetermined type parameters
  *  @param myMap a map from PolyType to arrays.
@@ -18,7 +19,7 @@ import config.Config
  *               An instantiated type parameter is represented by having its instance type in
  *               the corresponding array entry.
  */
-class Constraint(val myMap: SimpleMap[PolyType, Array[Type]]) extends AnyVal with Showable {
+class Constraint(val myMap: SimpleMap[PolyType, Array[Type]]) extends Showable {
 
   /** Does the constraint's domain contain the type parameters of `pt`? */
   def contains(pt: PolyType): Boolean = myMap(pt) != null
@@ -72,13 +73,9 @@ class Constraint(val myMap: SimpleMap[PolyType, Array[Type]]) extends AnyVal wit
    *  the entries corresponding to `pt` with `entries`.
    */
   private def updateEntries(pt: PolyType, entries: Array[Type])(implicit ctx: Context) : Constraint = {
-    import Constraint._
     val res = new Constraint(myMap.updated(pt, entries))
     if (Config.checkConstraintsNonCyclic) checkNonCyclic(pt, entries)
-    if (res.myMap.size > maxSize) {
-      maxSize = res.myMap.size
-      maxConstraint = res
-    }
+    ctx.runInfo.recordConstraintSize(res)
     res
   }
 
@@ -110,7 +107,7 @@ class Constraint(val myMap: SimpleMap[PolyType, Array[Type]]) extends AnyVal wit
   }
 
   /** A new constraint which is derived from this constraint by mapping
-   *  `op` over all entries of type `poly`.
+   *  `op` over all entries of `poly`.
    *  @pre  `this contains poly`.
    */
   def transformed(poly: PolyType, op: Type => Type)(implicit ctx: Context) : Constraint =
@@ -249,27 +246,32 @@ class Constraint(val myMap: SimpleMap[PolyType, Array[Type]]) extends AnyVal wit
   /** Perform operation `op` on all typevars, or only on uninstantiated
    *  typevars, depending on whether `uninstOnly` is set or not.
    */
-  def foreachTypeVar(op: TypeVar => Unit, uninstOnly: Boolean = false): Unit =
+  def foreachTypeVar(op: TypeVar => Unit): Unit =
     myMap.foreachBinding { (poly, entries) =>
       for (i <- 0 until paramCount(entries)) {
-        def qualifies(tv: TypeVar) =
-          if (uninstOnly) isBounds(entries(i)) else !tv.inst.exists
         typeVar(entries, i) match {
-          case tv: TypeVar if qualifies(tv) => op(tv)
+          case tv: TypeVar if !tv.inst.exists => op(tv)
           case _ =>
         }
       }
     }
 
-  /** Perform operation `op` on all uninstantiated typevars.
-   */
-   def foreachUninstVar(op: TypeVar => Unit): Unit = foreachTypeVar(op, uninstOnly = true)
+  private var myUninstVars: mutable.ArrayBuffer[TypeVar] = null
 
   /** The uninstantiated typevars of this constraint */
   def uninstVars: collection.Seq[TypeVar] = {
-    val buf = new mutable.ArrayBuffer[TypeVar]
-    foreachUninstVar(buf += _)
-    buf
+    if (myUninstVars == null) {
+      myUninstVars = new mutable.ArrayBuffer[TypeVar]
+      myMap.foreachBinding { (poly, entries) =>
+        for (i <- 0 until paramCount(entries)) {
+          typeVar(entries, i) match {
+            case tv: TypeVar if isBounds(entries(i)) => myUninstVars += tv
+            case _ =>
+          }
+        }
+      }
+    }
+    myUninstVars
   }
 
   def constrainedTypesText(printer: Printer): Text =
@@ -294,9 +296,14 @@ class Constraint(val myMap: SimpleMap[PolyType, Array[Type]]) extends AnyVal wit
   }
 }
 
-object Constraint {
-  var maxSize = 0
-  var maxConstraint: Constraint = _
-  def printMax()(implicit ctx: Context) =
-    if (maxSize > 0) println(s"max constraint = ${maxConstraint.show}")
+trait ConstraintRunInfo { self: RunInfo =>
+  private var maxSize = 0
+  private var maxConstraint: Constraint = _
+  def recordConstraintSize(c: Constraint) =
+    if (c.myMap.size > maxSize) {
+      maxSize = c.myMap.size
+      maxConstraint = c
+    }
+  def printMaxConstraint()(implicit ctx: Context) =
+    if (maxSize > 0) typr.println(s"max constraint = ${maxConstraint.show}")
 }

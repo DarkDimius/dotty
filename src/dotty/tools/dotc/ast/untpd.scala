@@ -6,15 +6,24 @@ import core._
 import util.Positions._, Types._, Contexts._, Constants._, Names._, NameOps._, Flags._
 import Denotations._, SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._
 import Decorators._
+import util.Attachment
 import language.higherKinds
 import collection.mutable.ListBuffer
 
-object untpd extends Trees.Instance[Untyped] with TreeInfo[Untyped] {
+object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
 
-// ----- Tree cases that exist in untyped form only ------------------
+  // ----- Tree cases that exist in untyped form only ------------------
+
+  trait OpTree extends Tree {
+    def op: Name
+    override def isTerm = op.isTermName
+    override def isType = op.isTypeName
+  }
 
   /** A typed subtree of an untyped tree needs to be wrapped in a TypedSlice */
-  case class TypedSplice(tree: tpd.Tree) extends Tree
+  case class TypedSplice(tree: tpd.Tree) extends ProxyTree {
+    def forwardTo = tree
+  }
 
   /** mods object name impl */
   case class ModuleDef(mods: Modifiers, name: TermName, impl: Template)
@@ -25,12 +34,20 @@ object untpd extends Trees.Instance[Untyped] with TreeInfo[Untyped] {
 
   case class SymbolLit(str: String) extends TermTree
   case class InterpolatedString(id: TermName, strings: List[Literal], elems: List[Tree]) extends TermTree
-  case class Function(args: List[Tree], body: Tree) extends Tree
-  case class InfixOp(left: Tree, op: Name, right: Tree) extends Tree
-  case class PostfixOp(od: Tree, op: Name) extends Tree
-  case class PrefixOp(op: Name, od: Tree) extends Tree
-  case class Parens(t: Tree) extends Tree
-  case class Tuple(trees: List[Tree]) extends Tree
+  case class Function(args: List[Tree], body: Tree) extends Tree {
+    override def isTerm = body.isTerm
+    override def isType = body.isType
+  }
+  case class InfixOp(left: Tree, op: Name, right: Tree) extends OpTree
+  case class PostfixOp(od: Tree, op: Name) extends OpTree
+  case class PrefixOp(op: Name, od: Tree) extends OpTree
+  case class Parens(t: Tree) extends ProxyTree {
+    def forwardTo = t
+  }
+  case class Tuple(trees: List[Tree]) extends Tree {
+    override def isTerm = trees.isEmpty || trees.head.isTerm
+    override def isType = !isTerm
+  }
   case class WhileDo(cond: Tree, body: Tree) extends TermTree
   case class DoWhile(body: Tree, cond: Tree) extends TermTree
   case class ForYield(enums: List[Tree], expr: Tree) extends TermTree
@@ -44,6 +61,47 @@ object untpd extends Trees.Instance[Untyped] with TreeInfo[Untyped] {
     extends TypeDef(mods, name, rhs) {
     override def withName(name: Name)(implicit ctx: Context) = cpy.PolyTypeDef(this, mods, name.toTypeName, tparams, rhs)
   }
+
+  // ----- TypeTrees that refer to other tree's symbols -------------------
+
+  /** A type tree that gets its type from some other tree's symbol. Enters the
+   *  type tree in the References attachment of the `from` tree as a side effect.
+   */
+  abstract class DerivedTypeTree extends TypeTree(EmptyTree) {
+
+    private var myWatched: Tree = EmptyTree
+
+    /** The watched tree; used only for printing */
+    def watched: Tree = myWatched
+
+    /** Install the derived type tree as a dependency on `original` */
+    def watching(original: DefTree): this.type = {
+      myWatched = original
+      val existing = original.attachmentOrElse(References, Nil)
+      original.putAttachment(References, this :: existing)
+      this
+    }
+
+    /** A hook to ensure that all necessary symbols are completed so that
+     *  OriginalSymbol attachments are propagated to this tree
+     */
+    def ensureCompletions(implicit ctx: Context): Unit = ()
+
+    /** The method that computes the type of this tree */
+    def derivedType(originalSym: Symbol)(implicit ctx: Context): Type
+  }
+
+    /** Attachment key containing TypeTrees whose type is computed
+   *  from the symbol in this type. These type trees have marker trees
+   *  TypeRefOfSym or InfoOfSym as their originals.
+   */
+  val References = new Attachment.Key[List[Tree]]
+
+  /** Attachment key for TypeTrees marked with TypeRefOfSym or InfoOfSym
+   *  which contains the symbol of the original tree from which this
+   *  TypeTree is derived.
+   */
+  val OriginalSymbol = new Attachment.Key[Symbol]
 
   // ------ Creation methods for untyped only -----------------
 
@@ -91,7 +149,6 @@ object untpd extends Trees.Instance[Untyped] with TreeInfo[Untyped] {
   def Import(expr: Tree, selectors: List[untpd.Tree]): Import = new Import(expr, selectors)
   def PackageDef(pid: RefTree, stats: List[Tree]): PackageDef = new PackageDef(pid, stats)
   def Annotated(annot: Tree, arg: Tree): Annotated = new Annotated(annot, arg)
-  def SharedTree(shared: Tree): SharedTree = new SharedTree(shared)
 
   // ------ Additional creation methods for untyped only -----------------
 
@@ -101,10 +158,19 @@ object untpd extends Trees.Instance[Untyped] with TreeInfo[Untyped] {
    *  ==>
    *      (new pre.C).<init>[Ts](args1)...(args_n)
    */
-  def New(tpt: Tree, argss: List[List[Tree]]): Tree = {
+  def New(tpt: Tree, argss: List[List[Tree]])(implicit ctx: Context): Tree = {
     val (tycon, targs) = tpt match {
-      case AppliedTypeTree(tycon, targs) => (tycon, targs)
-      case _ => (tpt, Nil)
+      case AppliedTypeTree(tycon, targs) =>
+        (tycon, targs)
+      case TypedSplice(AppliedTypeTree(tycon, targs)) =>
+        (TypedSplice(tycon), targs map TypedSplice)
+      case TypedSplice(tpt1: Tree) =>
+        val argTypes = tpt1.tpe.argTypes
+        val tycon = tpt1.tpe.withoutArgs(argTypes)
+        def wrap(tpe: Type) = TypeTree(tpe) withPos tpt.pos
+        (wrap(tycon), argTypes map wrap)
+      case _ =>
+        (tpt, Nil)
     }
     var prefix: Tree = Select(New(tycon), nme.CONSTRUCTOR)
     if (targs.nonEmpty) prefix = TypeApply(prefix, targs)
@@ -261,7 +327,7 @@ object untpd extends Trees.Instance[Untyped] with TreeInfo[Untyped] {
     }
   }
 
-  abstract class UntypedTreeTransformer(cpy: UntypedTreeCopier = untpd.cpy) extends TreeTransformer(cpy) {
+  abstract class UntypedTreeMap(cpy: UntypedTreeCopier = untpd.cpy) extends TreeMap(cpy) {
     override def transform(tree: Tree)(implicit ctx: Context): Tree = tree match {
       case ModuleDef(mods, name, impl) =>
         cpy.ModuleDef(tree, mods, name, transformSub(impl))

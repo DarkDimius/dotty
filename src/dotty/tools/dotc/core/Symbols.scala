@@ -3,21 +3,27 @@ package dotc
 package core
 
 import Periods._
-import Transformers._
-import Names._, Scopes._
+import Names._
+import Scopes._
 import Flags._
 import java.lang.AssertionError
 import Decorators._
 import Symbols._
 import Contexts._
-import SymDenotations._, printing.Texts._
+import SymDenotations._
+import printing.Texts._
 import printing.Printer
-import Types._, Annotations._, util.Positions._, StdNames._, NameOps._
-import ast.tpd.{TreeMapper, SharedTree}
+import Types._
+import Annotations._
+import util.Positions._
+import StdNames._
+import NameOps._
+import ast.tpd.{TreeTypeMap, Tree}
 import Denotations.{ Denotation, SingleDenotation, MultiDenotation }
 import collection.mutable
 import io.AbstractFile
 import language.implicitConversions
+import util.DotClass
 
 /** Creation methods for symbols */
 trait Symbols { this: Context =>
@@ -125,8 +131,8 @@ trait Symbols { this: Context =>
         infoFn(module, modcls), privateWithin)
     val mdenot = SymDenotation(
         module, owner, name, modFlags | ModuleCreationFlags,
-        if (cdenot.isCompleted) TypeRef(owner.thisType, modclsName) withSym modcls
-        else new ModuleCompleter(modcls)(condensed))
+        if (cdenot.isCompleted) TypeRef.withSymAndName(owner.thisType, modcls, modclsName)
+        else new ModuleCompleter(modcls))
     module.denot = mdenot
     modcls.denot = cdenot
     module
@@ -150,7 +156,7 @@ trait Symbols { this: Context =>
     newModuleSymbol(
         owner, name, modFlags, clsFlags,
         (module, modcls) => ClassInfo(
-          owner.thisType, modcls, parents, decls, TermRef(owner.thisType, name) withSym module),
+          owner.thisType, modcls, parents, decls, TermRef.withSymAndName(owner.thisType, module, name)),
         privateWithin, coord, assocFile)
 
   /** Create a package symbol with associated package class
@@ -181,11 +187,11 @@ trait Symbols { this: Context =>
    *  when attempted to be completed.
    */
   def newStubSymbol(owner: Symbol, name: Name, file: AbstractFile = null): Symbol = {
-    def stubCompleter = new StubInfo()(condensed)
+    def stubCompleter = new StubInfo()
     val normalizedOwner = if (owner is ModuleVal) owner.moduleClass else owner
     println(s"creating stub for ${name.show}, owner = ${normalizedOwner.denot.debugString}, file = $file")
     println(s"decls = ${normalizedOwner.decls.toList.map(_.debugString).mkString("\n  ")}") // !!! DEBUG
-    if (base.settings.debug.value) throw new Error()
+    //if (base.settings.debug.value) throw new Error()
     val stub = name match {
       case name: TermName =>
         newModuleSymbol(normalizedOwner, name, EmptyFlags, EmptyFlags, stubCompleter, assocFile = file)
@@ -196,12 +202,20 @@ trait Symbols { this: Context =>
     stub
   }
 
-  /** Create the local template dummy of given class `cls`. */
+  /** Create the local template dummy of given class `cls`.
+   *  In a template
+   *
+   *     trait T { val fld: Int; { val x: int = 2 }; val fld2 = { val y = 2; y }}
+   *
+   *  the owner of `x` is the local dummy of the template. The owner of the local
+   *  dummy is then the class of the template itself. By contrast, the owner of `y`
+   *  would be `fld2`. There is a single local dummy per template.
+   */
   def newLocalDummy(cls: Symbol, coord: Coord = NoCoord) =
     newSymbol(cls, nme.localDummyName(cls), EmptyFlags, NoType)
 
   /** Create an import symbol pointing back to given qualifier `expr`. */
-  def newImportSymbol(expr: SharedTree, coord: Coord = NoCoord) =
+  def newImportSymbol(expr: Tree, coord: Coord = NoCoord) =
     newSymbol(NoSymbol, nme.IMPORT, EmptyFlags, ImportType(expr), coord = coord)
 
   /** Create a class constructor symbol for given class `cls`. */
@@ -240,7 +254,7 @@ trait Symbols { this: Context =>
     tparams
   }
 
-  def newSkolem(tp: Type) = newSymbol(defn.RootClass, nme.SKOLEM, SyntheticArtifact, tp)
+  def newSkolem(tp: Type) = newSymbol(defn.RootClass, nme.SKOLEM, SyntheticArtifact | Permanent, tp)
 
   def newErrorSymbol(owner: Symbol, name: Name) =
     newSymbol(owner, name, SyntheticArtifact,
@@ -263,7 +277,7 @@ trait Symbols { this: Context =>
     else {
       val copies: List[Symbol] = for (original <- originals) yield
         newNakedSymbol[original.ThisName](original.coord)
-      val treeMap = new TreeMapper(typeMap, ownerMap)
+      val treeMap = new TreeTypeMap(typeMap, ownerMap)
         .withSubstitution(originals, copies)
       (originals, copies).zipped foreach {(original, copy) =>
         val odenot = original.denot
@@ -320,12 +334,14 @@ object Symbols {
     /** The current denotation of this symbol */
     final def denot(implicit ctx: Context): SymDenotation = {
       var denot = lastDenot
-      if (!(denot.validFor contains ctx.period))
+      if (!(denot.validFor contains ctx.period)) {
         denot = denot.current.asInstanceOf[SymDenotation]
+        lastDenot = denot
+      }
       denot
     }
 
-    private def defRunId: RunId =
+    private[core] def defRunId: RunId =
       if (lastDenot == null) NoRunId else lastDenot.validFor.runId
 
     /** Does this symbol come from a currently compiled source file? */
@@ -338,8 +354,8 @@ object Symbols {
     final def isType(implicit ctx: Context): Boolean = denot.isType
     final def isClass: Boolean = isInstanceOf[ClassSymbol]
 
-    final def asTerm(implicit ctx: Context): TermSymbol = { assert(isTerm); asInstanceOf[TermSymbol] }
-    final def asType(implicit ctx: Context): TypeSymbol = { assert(isType); asInstanceOf[TypeSymbol] }
+    final def asTerm(implicit ctx: Context): TermSymbol = { assert(isTerm, s"asTerm called on not-a-Term $this" ); asInstanceOf[TermSymbol] }
+    final def asType(implicit ctx: Context): TypeSymbol = { assert(isType, s"isType called on not-a-Type $this"); asInstanceOf[TypeSymbol] }
     final def asClass: ClassSymbol = asInstanceOf[ClassSymbol]
 
     /** A unique, densely packed integer tag for each class symbol, -1
@@ -350,7 +366,7 @@ object Symbols {
 
     /** This symbol entered into owner's scope (owner must be a class). */
     final def entered(implicit ctx: Context): this.type = {
-      assert(this.owner.isClass) // !!! DEBUG
+      assert(this.owner.isClass, s"symbol ($this) entered the scope of non-class owner ${this.owner}") // !!! DEBUG
       this.owner.asClass.enter(this)
       if (this is Module) this.owner.asClass.enter(this.moduleClass)
       this
@@ -362,6 +378,11 @@ object Symbols {
 
     /** If this symbol satisfies predicate `p` this symbol, otherwise `NoSymbol` */
     def filter(p: Symbol => Boolean): Symbol = if (p(this)) this else NoSymbol
+
+    /** Is this symbol a user-defined value class? */
+    final def isDerivedValueClass(implicit ctx: Context): Boolean =
+      false && // value classes are not supported yet
+      isClass && denot.derivesFrom(defn.AnyValClass) && !isPrimitiveValueClass
 
     /** Is symbol a primitive value class? */
     def isPrimitiveValueClass(implicit ctx: Context) = defn.ScalaValueClasses contains this
@@ -463,26 +484,22 @@ object Symbols {
 
     override def superId(implicit ctx: Context): Int = {
       val hint = superIdHint
-      val key = this.typeRef
-      if (hint >= 0 && hint <= ctx.lastSuperId && (ctx.classOfId(hint) eq key))
+      if (hint >= 0 && hint <= ctx.lastSuperId && (ctx.classOfId(hint) eq this))
         hint
       else {
-        val id = ctx.superIdOfClass get key match {
+        val id = ctx.superIdOfClass get this match {
           case Some(id) =>
             id
           case None =>
             val id = ctx.nextSuperId
-            ctx.superIdOfClass(key) = id
-            ctx.classOfId(id) = key
+            ctx.superIdOfClass(this) = id
+            ctx.classOfId(id) = this
             id
         }
         superIdHint = id
         id
       }
     }
-
-    /** Have we seen a subclass of this class? */
-    def hasChildren = superIdHint >= 0
 
     override protected def prefixString = "ClassSymbol"
   }

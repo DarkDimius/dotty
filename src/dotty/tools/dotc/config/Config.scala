@@ -12,6 +12,8 @@ object Config {
 
   final val checkConstraintsNonCyclic = true
 
+  final val flagInstantiationToNothing = false
+
   /** Throw an exception if a deep subtype recursion is detected */
   final val flagDeepSubTypeRecursions = true
 
@@ -25,4 +27,7 @@ object Config {
    *  Disadvantage: It might hide inconsistencies, so while debugging it's better to turn it off
    */
   final val newMatch = false
+
+  /** The recursion depth for showing a summarized string */
+  final val summarizeDepth = 2
 }

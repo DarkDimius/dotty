@@ -7,15 +7,15 @@ import Contexts.Context, Scopes.Scope, Denotations.Denotation, Annotations.Annot
 import StdNames.nme
 import ast.{Trees, untpd}
 import typer.Namer
-import typer.Inferencing.ViewProto
+import typer.ProtoTypes.{SelectionProto, ViewProto, FunProto}
 import Trees._
 import scala.annotation.switch
 
 class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
 
-  override protected def recursionLimitExceeeded() = {}
+  override protected def recursionLimitExceeded() = {}
 
-  protected val PrintableFlags = (ModifierFlags | Label | Module).toCommonFlags
+  protected val PrintableFlags = (SourceModifierFlags | Label | Module).toCommonFlags
 
   /** The closest enclosing DefDef, TypeDef, or ClassDef node */
   private var currentOwner: untpd.Tree = untpd.EmptyTree
@@ -57,7 +57,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
     tp match {
       case ThisType(cls) =>
         if (isOmittablePrefix(cls)) return ""
-      case tp @ TermRef(pre, name) =>
+      case tp @ TermRef(pre, _) =>
         val sym = tp.symbol
         if (sym.isPackageObject) return toTextPrefix(pre)
         if (isOmittablePrefix(sym)) return ""
@@ -96,7 +96,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       }
     tp match {
       case tp: RefinedType =>
-        val args = tp.typeArgs
+        val args = tp.argInfos
         if (args.nonEmpty) {
           val tycon = tp.unrefine
           val cls = tycon.typeSymbol
@@ -107,10 +107,12 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
           }
           return (toTextLocal(tycon) ~ "[" ~ Text(args map argText, ", ") ~ "]").close
         }
+      case tp: SelectionProto =>
+        return toText(RefinedType(WildcardType, tp.name, tp.memberProto))
       case tp: ViewProto =>
         return toText(tp.argType) ~ " ?=>? " ~ toText(tp.resultType)
-      case tp @ TypeRef(pre, name) =>
-        if (tp.symbol is TypeParam | TypeArgument) {
+      case tp: TypeRef =>
+        if ((tp.symbol is TypeParam | TypeArgument) && !ctx.phase.erasedTypes) {
           return tp.info match {
             case TypeAlias(hi) => toText(hi)
             case _ => nameString(tp.symbol)
@@ -118,14 +120,14 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         }
       case ExprType(result) =>
         return "=> " ~ toText(result)
-      case typer.Inferencing.FunProto(args, resultType, _) =>
+      case FunProto(args, resultType, _) =>
         return "funproto(" ~ toTextGlobal(args, ", ") ~ "):" ~ toText(resultType)
       case _ =>
     }
     super.toText(tp)
   }
 
-  override def toText[T >: Untyped](tree: Tree[T]): Text = {
+  override def toText[T >: Untyped](tree: Tree[T]): Text = controlled {
 
     def optDotPrefix(name: Name) = optText(name)(_ ~ ".")
 
@@ -239,6 +241,8 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         }
       case SeqLiteral(elems) =>
         "[" ~ toTextGlobal(elems, ",") ~ "]"
+      case tpt: untpd.DerivedTypeTree =>
+        "<derived typetree watching " ~ summarized(toText(tpt.watched)) ~ ">"
       case TypeTree(orig) =>
         if (tree.hasType) toText(tree.typeOpt) else toText(orig)
       case SingletonTypeTree(ref) =>
@@ -329,8 +333,6 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         toTextLocal(arg) ~~ annotText(annot)
       case EmptyTree =>
         "<empty>"
-      case SharedTree(shared) =>
-        toText(shared)
       case TypedSplice(t) =>
         toText(t)
       case ModuleDef(mods, name, impl) =>
@@ -441,9 +443,8 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
 
   override def toText(sym: Symbol): Text = {
     if (sym.name == nme.IMPORT) {
-      val info = if (sym.isCompleted) sym.info else sym.completer
       def importString(tree: untpd.Tree) = s"import ${tree.show}"
-      info match {
+      sym.infoOrCompleter match {
         case info: Namer#Completer => return importString(info.original)
         case info: ImportType => return importString(info.expr)
         case _ =>

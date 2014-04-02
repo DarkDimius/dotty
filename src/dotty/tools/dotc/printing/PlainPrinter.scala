@@ -7,6 +7,7 @@ import Contexts.Context, Scopes.Scope, Denotations.Denotation, Annotations.Annot
 import StdNames.nme
 import ast.Trees._, ast.untpd
 import java.lang.Integer.toOctalString
+import config.Config.summarizeDepth
 import scala.annotation.switch
 
 class PlainPrinter(_ctx: Context) extends Printer {
@@ -15,7 +16,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
   protected def maxToTextRecursions = 100
 
   protected final def controlled(op: => Text): Text =
-    if (ctx.toTextRecursions < maxToTextRecursions)
+    if (ctx.toTextRecursions < maxToTextRecursions && ctx.toTextRecursions < maxSummarized)
       try {
         ctx.toTextRecursions += 1
         op
@@ -23,12 +24,13 @@ class PlainPrinter(_ctx: Context) extends Printer {
         ctx.toTextRecursions -= 1
       }
     else {
-      recursionLimitExceeeded()
+      if (ctx.toTextRecursions >= maxToTextRecursions)
+        recursionLimitExceeded()
       "..."
     }
 
-  protected def recursionLimitExceeeded() = {
-    ctx.warning("Exceeded recursion depth attempting to print type.")
+  protected def recursionLimitExceeded() = {
+    ctx.warning("Exceeded recursion depth attempting to print.")
     (new Throwable).printStackTrace
   }
 
@@ -100,11 +102,10 @@ class PlainPrinter(_ctx: Context) extends Printer {
         toText(tp.underlying) ~ ".type"
       case tp: SingletonType =>
         toText(tp.underlying) ~ "(" ~ toTextRef(tp) ~ ")"
-      case tp @ TypeRef(pre, name) =>
-        toTextPrefix(pre) ~ selectionString(tp)
+      case tp: TypeRef =>
+        toTextPrefix(tp.prefix) ~ selectionString(tp)
       case tp: RefinedType =>
-        // return tp.toString // !!! DEBUG
-        val parent :: (refined: List[RefinedType]) =
+        val parent :: (refined: List[RefinedType @unchecked]) =
           refinementChain(tp).reverse
         toTextLocal(parent) ~ "{" ~ Text(refined map toTextRefinement, "; ").close ~ "}"
       case AndType(tp1, tp2) =>
@@ -187,8 +188,8 @@ class PlainPrinter(_ctx: Context) extends Printer {
   /** The string representation of this type used as a prefix */
   protected def toTextRef(tp: SingletonType): Text = controlled {
     tp match {
-      case tp @ TermRef(pre, name) =>
-        toTextPrefix(pre) ~ selectionString(tp)
+      case tp: TermRef =>
+        toTextPrefix(tp.prefix) ~ selectionString(tp)
       case ThisType(cls) =>
         nameString(cls) + ".this"
       case SuperType(thistpe: SingletonType, _) =>
@@ -393,6 +394,17 @@ class PlainPrinter(_ctx: Context) extends Printer {
         tree.fallbackToText(this)
     }
   }.close // todo: override in refined printer
+
+  private var maxSummarized = Int.MaxValue
+
+  def summarized[T](depth: Int)(op: => T): T = {
+    val saved = maxSummarized
+    maxSummarized = ctx.toTextRecursions + depth
+    try op
+    finally maxSummarized = depth
+  }
+
+  def summarized[T](op: => T): T = summarized(summarizeDepth)(op)
 
   def plain = this
 }

@@ -4,7 +4,9 @@ import Process._
 
 object DottyBuild extends Build {
 
-  // set sources to src/, tests to test/ and resources to resources/
+  val TRAVIS_BUILD = "dotty.travis.build"
+
+    // set sources to src/, tests to test/ and resources to resources/
   val srcDirs = Seq(
     scalaSource in Compile := baseDirectory.value / "src",
     javaSource in Compile := baseDirectory.value / "src",
@@ -26,7 +28,7 @@ object DottyBuild extends Build {
     
     // get reflect and xml onboard
     libraryDependencies ++= Seq("org.scala-lang" % "scala-reflect" % scalaVersion.value,
-                                "org.scala-lang.modules" %% "scala-xml" % "1.0.0-RC7"),
+                                "org.scala-lang.modules" %% "scala-xml" % "1.0.1"),
 
     // get junit onboard
     libraryDependencies += "com.novocode" % "junit-interface" % "0.9" % "test",
@@ -34,6 +36,8 @@ object DottyBuild extends Build {
     // scalac options
     scalacOptions in Global ++= Seq("-feature", "-deprecation", "-language:_"),
 
+    // enable verbose exception messages for JUnit
+    testOptions += Tests.Argument(TestFrameworks.JUnit, "-a", "-v"),
     // Adjust classpath for running dotty
     mainClass in (Compile, run) := Some("dotty.tools.dotc.Main"),
     fork in run := true,
@@ -48,7 +52,14 @@ object DottyBuild extends Build {
        // dotty itself needs to be in the bootclasspath
        val fullpath = ("-Xbootclasspath/a:" + bin) :: path.toList
        // System.err.println("BOOTPATH: " + fullpath)
-       fullpath
+
+       val travis_build = // propagate if this is a travis build
+         if (sys.props.isDefinedAt(TRAVIS_BUILD)) 
+           List(s"-D$TRAVIS_BUILD=${sys.props(TRAVIS_BUILD)}")
+         else 
+           List()
+
+       travis_build ::: fullpath
     }
   )
 

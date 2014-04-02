@@ -172,7 +172,7 @@ object Flags {
 
   /** The conjunction of all flags in given flag set */
   def allOf(flagss: FlagSet*) = {
-    assert(flagss forall (_.numFlags == 1))
+    assert(flagss forall (_.numFlags == 1), "Flags.allOf doesn't support flag " + flagss.find(_.numFlags != 1))
     FlagConjunction(union(flagss: _*).bits)
   }
 
@@ -180,6 +180,9 @@ object Flags {
 
   /** The empty flag set */
   final val EmptyFlags = FlagSet(0)
+
+  /** The undefined flag set */
+  final val UndefinedFlags = FlagSet(~KINDFLAGS)
 
   // Available flags:
 
@@ -348,6 +351,9 @@ object Flags {
   /** Symbol is a Java-style varargs method */
   final val JavaVarargs = termFlag(38, "<varargs>")
 
+  /** Symbol is a Java default method */
+  final val DefaultMethod = termFlag(39, "<defaultmethod>")
+
   // Flags following this one are not pickled
 
   /** Denotation is in train of being loaded and completed, used to catch cyclic dependencies */
@@ -401,9 +407,13 @@ object Flags {
 // --------- Combined Flag Sets and Conjunctions ----------------------
 
   /** Flags representing source modifiers */
-  final val ModifierFlags =
+  final val SourceModifierFlags =
     commonFlags(Private, Protected, Abstract, Final,
      Sealed, Case, Implicit, Override, AbsOverride, Lazy)
+
+  /** Flags representing modifiers that can appear in trees */
+  final val ModifierFlags =
+    SourceModifierFlags | Trait | Module | Param | Synthetic | Package
 
   /** Flags representing access rights */
   final val AccessFlags = Private | Protected | Local
@@ -428,7 +438,7 @@ object Flags {
   final val RetainedTypeArgFlags = VarianceFlags | ExpandedName | Protected | Local
 
   /** Modules always have these flags set */
-  final val ModuleCreationFlags = ModuleVal
+  final val ModuleCreationFlags = ModuleVal | Final | Stable
 
   /** Module classes always have these flags set */
   final val ModuleClassCreationFlags = ModuleClass | Final
@@ -473,7 +483,7 @@ object Flags {
   final val ExpandedTypeParam = allOf(ExpandedName, TypeParam)
 
   /** A parameter or parameter accessor */
-  final val ParamOrAccessor = Param | Accessor
+  final val ParamOrAccessor = Param | ParamAccessor
 
   /** A covariant type parameter instance */
   final val LocalCovariant = allOf(Local, Covariant)

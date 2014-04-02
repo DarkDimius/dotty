@@ -110,7 +110,7 @@ class PickleBuffer(data: Array[Byte], from: Int, to: Int) {
     do {
       b = readByte()
       x = (x << 7) + (b & 0x7f)
-    } while ((b & 0x80) != 0L);
+    } while ((b & 0x80) != 0L)
     x
   }
 
@@ -158,13 +158,34 @@ class PickleBuffer(data: Array[Byte], from: Int, to: Int) {
    *  @return    ...
    */
   def until[T](end: Int, op: () => T): List[T] =
-    if (readIndex == end) List() else op() :: until(end, op);
+    if (readIndex == end) List() else op() :: until(end, op)
 
   /** Perform operation <code>op</code> the number of
    *  times specified.  Concatenate the results into a list.
    */
   def times[T](n: Int, op: ()=>T): List[T] =
     if (n == 0) List() else op() :: times(n-1, op)
+
+  /** Pickle = majorVersion_Nat minorVersion_Nat nbEntries_Nat {Entry}
+   *  Entry  = type_Nat length_Nat [actual entries]
+   *
+   *  Assumes that the ..Version_Nat are already consumed.
+   *
+   *  @return an array mapping entry numbers to locations in
+   *  the byte array where the entries start.
+   */
+  def createIndex: Array[Int] = {
+    val index = new Array[Int](readNat()) // nbEntries_Nat
+    for (i <- 0 until index.length) {
+      index(i) = readIndex
+      readByte() // skip type_Nat
+      readIndex = readNat() + readIndex // read length_Nat, jump to next entry
+    }
+    index
+  }
+}
+
+object PickleBuffer {
 
   private final val ScalaFlagEnd = 48
   private final val ChunkBits = 8
@@ -208,8 +229,8 @@ class PickleBuffer(data: Array[Byte], from: Int, to: Int) {
       PARAM -> Param,
       PACKAGE -> Package,
       MACRO -> Macro,
-      BYNAMEPARAM -> ((Method, Covariant)), // Dotty deviation: no auto-tupling
-      LABEL -> ((Label, Contravariant)), // Dotty deviation: no auto-tupling
+      BYNAMEPARAM -> (Method, Covariant),
+      LABEL -> (Label, Contravariant),
       ABSOVERRIDE -> AbsOverride,
       LOCAL -> Local,
       JAVA -> JavaDefined,
@@ -217,16 +238,16 @@ class PickleBuffer(data: Array[Byte], from: Int, to: Int) {
       STABLE -> Stable,
       STATIC -> Static,
       CASEACCESSOR -> CaseAccessor,
-      DEFAULTPARAM -> ((DefaultParameterized, Trait)), // Dotty deviation: no auto-tupling
+      DEFAULTPARAM -> (DefaultParameterized, Trait),
       BRIDGE -> Bridge,
       ACCESSOR -> Accessor,
       SUPERACCESSOR -> SuperAccessor,
       PARAMACCESSOR -> ParamAccessor,
       MODULEVAR -> Scala2ModuleVar,
       LAZY -> Lazy,
-      MIXEDIN -> ((MixedIn, Scala2Existential)), // Dotty deviation: no auto-tupling
+      MIXEDIN -> (MixedIn, Scala2Existential),
       EXPANDEDNAME -> ExpandedName,
-      IMPLCLASS -> ((Scala2PreSuper, ImplClass)), // Dotty deviation: no auto-tupling
+      IMPLCLASS -> (Scala2PreSuper, ImplClass),
       SPECIALIZED -> Specialized,
       DEFAULTINIT -> DefaultInit,
       VBRIDGE -> VBridge,
@@ -259,24 +280,6 @@ class PickleBuffer(data: Array[Byte], from: Int, to: Int) {
     }
 
     (chunkMap(termMap), chunkMap(typeMap))
-  }
-
-  /** Pickle = majorVersion_Nat minorVersion_Nat nbEntries_Nat {Entry}
-   *  Entry  = type_Nat length_Nat [actual entries]
-   *
-   *  Assumes that the ..Version_Nat are already consumed.
-   *
-   *  @return an array mapping entry numbers to locations in
-   *  the byte array where the entries start.
-   */
-  def createIndex: Array[Int] = {
-    val index = new Array[Int](readNat()) // nbEntries_Nat
-    for (i <- 0 until index.length) {
-      index(i) = readIndex
-      readByte() // skip type_Nat
-      readIndex = readNat() + readIndex // read length_Nat, jump to next entry
-    }
-    index
   }
 
   def unpickleScalaFlags(sflags: Long, isType: Boolean): FlagSet = {

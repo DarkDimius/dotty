@@ -3,6 +3,9 @@ package core
 
 import Contexts._, Types._, Symbols._, Names._, Flags._, Scopes._
 import SymDenotations._
+import config.Printers._
+import Decorators._
+import StdNames._
 import util.SimpleMap
 
 trait TypeOps { this: Context =>
@@ -12,13 +15,13 @@ trait TypeOps { this: Context =>
     def toPrefix(pre: Type, cls: Symbol, thiscls: ClassSymbol): Type = /*>|>*/ ctx.debugTraceIndented(s"toPrefix($pre, $cls, $thiscls)") /*<|<*/ {
       if ((pre eq NoType) || (pre eq NoPrefix) || (cls is PackageClass))
         tp
-      else if (thiscls.derivesFrom(cls) && pre.baseType(thiscls).exists)
+      else if (thiscls.derivesFrom(cls) && pre.baseTypeRef(thiscls).exists)
         pre match {
           case SuperType(thispre, _) => thispre
           case _ => pre
         }
       else
-        toPrefix(pre.baseType(cls).normalizedPrefix, cls.owner, thiscls)
+        toPrefix(pre.baseTypeRef(cls).normalizedPrefix, cls.owner, thiscls)
     }
 
     /*>|>*/ ctx.conditionalTraceIndented(TypeOps.track , s"asSeen ${tp.show} from (${pre.show}, ${cls.show})", show = true) /*<|<*/ { // !!! DEBUG
@@ -36,6 +39,8 @@ trait TypeOps { this: Context =>
             asSeenFrom(tp.parent, pre, cls, theMap),
             tp.refinedName,
             asSeenFrom(tp.refinedInfo, pre, cls, theMap))
+        case tp: TypeBounds if tp.lo eq tp.hi =>
+          tp.derivedTypeAlias(asSeenFrom(tp.lo, pre, cls, theMap))
         case _ =>
           (if (theMap != null) theMap else new AsSeenFromMap(pre, cls))
             .mapOver(tp)
@@ -47,8 +52,85 @@ trait TypeOps { this: Context =>
     def apply(tp: Type) = asSeenFrom(tp, pre, cls, this)
   }
 
+  /** Implementation of Types#simplified */
+  final def simplify(tp: Type, theMap: SimplifyMap): Type = tp match {
+    case tp: NamedType =>
+      if (tp.symbol.isStatic) tp
+      else tp.derivedSelect(simplify(tp.prefix, theMap))
+    case tp: PolyParam =>
+      typerState.constraint.typeVarOfParam(tp) orElse tp
+    case  _: ThisType | _: BoundType | NoPrefix =>
+      tp
+    case tp: RefinedType =>
+      tp.derivedRefinedType(simplify(tp.parent, theMap), tp.refinedName, simplify(tp.refinedInfo, theMap))
+    case tp: TypeBounds if tp.lo eq tp.hi =>
+      tp.derivedTypeAlias(simplify(tp.lo, theMap))
+    case AndType(l, r) =>
+      simplify(l, theMap) & simplify(r, theMap)
+    case OrType(l, r) =>
+      simplify(l, theMap) | simplify(r, theMap)
+    case _ =>
+      (if (theMap != null) theMap else new SimplifyMap).mapOver(tp)
+  }
+
+  class SimplifyMap extends TypeMap {
+    def apply(tp: Type) = simplify(tp, this)
+  }
+
+  /** Approximate union type by intersection of its dominators.
+   *  See Type#approximateUnion for an explanation.
+   */
+  def approximateUnion(tp: Type): Type = {
+    /** a faster version of cs1 intersect cs2 */
+    def intersect(cs1: List[ClassSymbol], cs2: List[ClassSymbol]): List[ClassSymbol] = {
+      val cs2AsSet = new util.HashSet[ClassSymbol](100)
+      cs2.foreach(cs2AsSet.addEntry)
+      cs1.filter(cs2AsSet.contains)
+    }
+    /** The minimal set of classes in `cs` which derive all other classes in `cs` */
+    def dominators(cs: List[ClassSymbol], accu: List[ClassSymbol]): List[ClassSymbol] = (cs: @unchecked) match {
+      case c :: rest =>
+        val accu1 = if (accu exists (_ derivesFrom c)) accu else c :: accu
+        if (cs == c.baseClasses) accu1 else dominators(rest, accu1)
+    }
+    if (ctx.featureEnabled(defn.LanguageModuleClass, nme.keepUnions)) tp
+    else tp match {
+      case tp: OrType =>
+        val commonBaseClasses = tp.mapReduceOr(_.baseClasses)(intersect)
+        val doms = dominators(commonBaseClasses, Nil)
+        doms.map(tp.baseTypeWithArgs).reduceLeft(AndType.apply)
+      case tp @ AndType(tp1, tp2) =>
+        tp derived_& (approximateUnion(tp1), approximateUnion(tp2))
+      case tp: RefinedType =>
+        tp.derivedRefinedType(approximateUnion(tp.parent), tp.refinedName, tp.refinedInfo)
+      case _ =>
+        tp
+    }
+  }
+
+  /** A type is volatile if its DNF contains an alternative of the form
+   *  {P1, ..., Pn}, {N1, ..., Nk}, where the Pi are parent typerefs and the
+   *  Nj are refinement names, and one the 4 following conditions is met:
+   *
+   *  1. At least two of the parents Pi are abstract types.
+   *  2. One of the parents Pi is an abstract type, and one other type Pj,
+   *     j != i has an abstract member which has the same name as an
+   *     abstract member of the whole type.
+   *  3. One of the parents Pi is an abstract type, and one of the refinement
+   *     names Nj refers to an abstract member of the whole type.
+   *  4. One of the parents Pi is an an alias type with a volatile alias
+   *     or an abstract type with a volatile upper bound.
+   *
+   *  Lazy values are not allowed to have volatile type, as otherwise
+   *  unsoundness can result.
+   */
   final def isVolatile(tp: Type): Boolean = {
-    /** Pre-filter to avoid expensive DNF computation */
+
+    /** Pre-filter to avoid expensive DNF computation
+     *  If needsChecking returns false it is guaranteed that
+     *  DNF does not contain intersections, or abstract types with upper
+     *  bounds that themselves need checking.
+     */
     def needsChecking(tp: Type, isPart: Boolean): Boolean = tp match {
       case tp: TypeRef =>
         tp.info match {
@@ -61,34 +143,65 @@ trait TypeOps { this: Context =>
         needsChecking(tp.parent, true)
       case tp: TypeProxy =>
         needsChecking(tp.underlying, isPart)
-      case AndType(l, r) =>
-        needsChecking(l, true) || needsChecking(r, true)
-      case OrType(l, r) =>
-        isPart || needsChecking(l, isPart) && needsChecking(r, isPart)
+      case tp: AndType =>
+        true
+      case tp: OrType =>
+        isPart || needsChecking(tp.tp1, isPart) && needsChecking(tp.tp2, isPart)
       case _ =>
         false
     }
+
     needsChecking(tp, false) && {
-      tp.DNF forall { case (parents, refinedNames) =>
+      DNF(tp) forall { case (parents, refinedNames) =>
         val absParents = parents filter (_.symbol is Deferred)
-        absParents.size >= 2 || {
-          val ap = absParents.head
-          ((parents exists (p =>
-                (p ne ap)
-             || p.memberNames(abstractTypeNameFilter, tp).nonEmpty
-             || p.memberNames(abstractTermNameFilter, tp).nonEmpty))
-          || (refinedNames & tp.memberNames(abstractTypeNameFilter, tp)).nonEmpty
-          || (refinedNames & tp.memberNames(abstractTermNameFilter, tp)).nonEmpty
-          || isVolatile(ap)
-          )
+        absParents.nonEmpty && {
+          absParents.lengthCompare(2) >= 0 || {
+            val ap = absParents.head
+            ((parents exists (p =>
+              (p ne ap)
+              || p.memberNames(abstractTypeNameFilter, tp).nonEmpty
+              || p.memberNames(abstractTermNameFilter, tp).nonEmpty))
+            || (refinedNames & tp.memberNames(abstractTypeNameFilter, tp)).nonEmpty
+            || (refinedNames & tp.memberNames(abstractTermNameFilter, tp)).nonEmpty
+            || isVolatile(ap))
+          }
         }
       }
     }
   }
 
+  /** The disjunctive normal form of this type.
+   *  This collects a set of alternatives, each alternative consisting
+   *  of a set of typerefs and a set of refinement names. Both sets are represented
+   *  as lists, to obtain a deterministic order. Collected are
+   *  all type refs reachable by following aliases and type proxies, and
+   *  collecting the elements of conjunctions (&) and disjunctions (|).
+   *  The set of refinement names in each alternative
+   *  are the set of names in refinement types encountered during the collection.
+   */
+  final def DNF(tp: Type): List[(List[TypeRef], Set[Name])] = ctx.traceIndented(s"DNF($this)", checks) {
+    tp.dealias match {
+      case tp: TypeRef =>
+        (tp :: Nil, Set[Name]()) :: Nil
+      case RefinedType(parent, name) =>
+        for ((ps, rs) <- DNF(parent)) yield (ps, rs + name)
+      case tp: TypeProxy =>
+        DNF(tp.underlying)
+      case AndType(l, r) =>
+        for ((lps, lrs) <- DNF(l); (rps, rrs) <- DNF(r))
+          yield (lps | rps, lrs | rrs)
+      case OrType(l, r) =>
+        DNF(l) | DNF(r)
+      case tp =>
+        TypeOps.emptyDNF
+    }
+  }
+
+
+
   private def enterArgBinding(formal: Symbol, info: Type, cls: ClassSymbol, decls: Scope) = {
     val lazyInfo = new LazyType { // needed so we do not force `formal`.
-      def complete(denot: SymDenotation): Unit = {
+      def complete(denot: SymDenotation)(implicit ctx: Context): Unit = {
         denot setFlag formal.flags & RetainedTypeArgFlags
         denot.info = info
       }
@@ -185,9 +298,47 @@ trait TypeOps { this: Context =>
     }
     parentRefs
   }
+
+  /** Is `feature` enabled in class `owner`?
+   *  This is the case if one of the following two alternatives holds:
+   *
+   *  1. The feature is imported by a named import
+   *
+   *       import owner.feature
+   *
+   *  (the feature may be bunched with others, or renamed, but wildcard imports
+   *  don't count).
+   *
+   *  2. The feature is enabled by a compiler option
+   *
+   *       - language:<prefix>feature
+   *
+   *  where <prefix> is the full name of the owner followed by a "." minus
+   *  the prefix "dotty.language.".
+   */
+  def featureEnabled(owner: ClassSymbol, feature: TermName): Boolean = {
+    def toPrefix(sym: Symbol): String =
+      if (sym eq defn.LanguageModuleClass) "" else toPrefix(sym.owner) + sym.name + "."
+    def featureName = toPrefix(owner) + feature
+    def hasImport(implicit ctx: Context): Boolean = (
+         ctx.importInfo != null
+      && (   (ctx.importInfo.site.widen.typeSymbol eq owner)
+          && ctx.importInfo.originals.contains(feature)
+          ||
+          { var c = ctx.outer
+            while (c.importInfo eq ctx.importInfo) c = c.outer
+            hasImport(c)
+          }))
+    def hasOption = ctx.base.settings.language.value exists (s => s == featureName || s == "_")
+    hasImport || hasOption
+  }
+
+  /** Is auto-tupling enabled? */
+  def canAutoTuple =
+    !featureEnabled(defn.LanguageModuleClass, nme.noAutoTupling)
 }
 
 object TypeOps {
-
+  val emptyDNF = (Nil, Set[Name]()) :: Nil
   var track = false // !!!DEBUG
 }

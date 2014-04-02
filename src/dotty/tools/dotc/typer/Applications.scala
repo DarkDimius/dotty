@@ -19,11 +19,11 @@ import ErrorReporting._
 import Trees._
 import Names._
 import StdNames._
-import Inferencing._
+import ProtoTypes._
 import EtaExpansion._
 import collection.mutable
-import reflect.ClassTag
 import config.Printers._
+import TypeApplications._
 import language.implicitConversions
 
 object Applications {
@@ -212,7 +212,7 @@ trait Applications extends Compatibility { self: Typer =>
               else if (cx.scope != cx.outer.scope &&
                        cx.denotNamed(methRef.name).hasAltWith(_.symbol == meth)) {
                 val denot = cx.denotNamed(getterName)
-                assert(denot.exists)
+                assert(denot.exists, s"non-existent getter denotation ($denot) for getter($getterName)")
                 cx.owner.thisType.select(getterName, denot)
               } else findDefault(cx.outer)
             }
@@ -222,8 +222,8 @@ trait Applications extends Compatibility { self: Typer =>
             val pre =
               if (meth.isClassConstructor) {
                 // default getters for class constructors are found in the companion object
-                mpre.baseType(cls) match {
-                  case TypeRef(clspre, _) => ref(clspre, cls.companionModule)
+                mpre.baseTypeRef(cls) match {
+                  case tp: TypeRef => ref(tp.prefix, cls.companionModule)
                   case _ => NoType
                 }
               } else mpre
@@ -266,7 +266,7 @@ trait Applications extends Compatibility { self: Typer =>
               case arg :: Nil if isVarArg(arg) =>
                 addTyped(arg, formal)
               case _ =>
-                val elemFormal = formal.typeArgs.head
+                val elemFormal = formal.argTypesLo.head
                 args foreach (addTyped(_, elemFormal))
                 makeVarArg(args.length, elemFormal)
             }
@@ -397,8 +397,9 @@ trait Applications extends Compatibility { self: Typer =>
 
     val result = {
       var typedArgs = typedArgBuf.toList
-      val ownType =
-        if (!success) ErrorType
+      val app0 = cpy.Apply(app, normalizedFun, typedArgs)
+      val app1 =
+        if (!success) app0.withType(ErrorType)
         else {
           if (!sameSeq(args, orderedArgs)) {
             // need to lift arguments to maintain evaluation order in the
@@ -410,9 +411,9 @@ trait Applications extends Compatibility { self: Typer =>
           }
           if (sameSeq(typedArgs, args)) // trick to cut down on tree copying
             typedArgs = args.asInstanceOf[List[Tree]]
-          methodType.instantiate(typedArgs.tpes)
+          assignType(app0, normalizedFun, typedArgs)
         }
-      wrapDefs(liftedDefs, cpy.Apply(app, normalizedFun, typedArgs).withType(ownType))
+      wrapDefs(liftedDefs, app1)
     }
   }
 
@@ -433,8 +434,17 @@ trait Applications extends Compatibility { self: Typer =>
   def typedApply(tree: untpd.Apply, pt: Type)(implicit ctx: Context): Tree = {
 
     def realApply(implicit ctx: Context): Tree = track("realApply") {
-      val proto = new FunProto(tree.args, pt, this)
+      var proto = new FunProto(tree.args, pt, this)
       val fun1 = typedExpr(tree.fun, proto)
+
+      // Warning: The following line is dirty and fragile. We record that auto-tupling was demanded as
+      // a side effect in adapt. If it was, we assume the tupled proto-type in the rest of the application.
+      // This crucially relies on he fact that `proto` is used only in a single call of `adapt`,
+      // otherwise we would get possible cross-talk between different `adapt` calls using the same
+      // prototype. A cleaner alternative would be to return a modified prototype from `adapt` together with
+      // a modified tree but this would be more convoluted and less efficient.
+      if (proto.isTupled) proto = proto.tupled
+
       methPart(fun1).tpe match {
         case funRef: TermRef =>
           tryEither { implicit ctx =>
@@ -512,21 +522,11 @@ trait Applications extends Compatibility { self: Typer =>
   def typedTypeApply(tree: untpd.TypeApply, pt: Type)(implicit ctx: Context): Tree = track("typedTypeApply") {
     val typedArgs = tree.args mapconserve (typedType(_))
     val typedFn = typedExpr(tree.fun, PolyProto(typedArgs.tpes, pt))
-    val ownType = typedFn.tpe.widen match {
-      case pt: PolyType =>
-        checkBounds(typedArgs, pt, tree.pos)
-        val argTypes = typedArgs.tpes
-        if (argTypes.length == pt.paramNames.length)
-          pt.resultType.substParams(pt, typedArgs.tpes)
-        else {
-          ctx.error(i"wrong number of type parameters for ${typedFn.tpe}; expected: ${pt.paramNames.length}", tree.pos)
-          ErrorType
-        }
+    typedFn.tpe.widen match {
+      case pt: PolyType => checkBounds(typedArgs, pt, tree.pos)
       case _ =>
-        ctx.error(s"${err.exprStr(typedFn)} does not take type parameters", tree.pos)
-        ErrorType
     }
-    cpy.TypeApply(tree, typedFn, typedArgs).withType(ownType)
+    assignType(cpy.TypeApply(tree, typedFn, typedArgs), typedFn, typedArgs)
   }
 
   def typedUnApply(tree: untpd.Apply, pt: Type)(implicit ctx: Context): Tree = track("typedUnApply") {
@@ -576,13 +576,13 @@ trait Applications extends Compatibility { self: Typer =>
     /** Produce a typed qual.unappy or qual.unappySeq tree, or
      *  else if this fails follow a type alias and try again.
      */
-    val unapply = trySelectUnapply(qual) { sel =>
+    val unapplyFn = trySelectUnapply(qual) { sel =>
       val qual1 = followTypeAlias(qual)
       if (qual1.isEmpty) notAnExtractor(sel)
       else trySelectUnapply(qual1)(_ => notAnExtractor(sel))
     }
 
-    def fromScala2x = unapply.symbol.exists && (unapply.symbol.owner is Scala2x)
+    def fromScala2x = unapplyFn.symbol.exists && (unapplyFn.symbol.owner is Scala2x)
 
     def unapplyArgs(unapplyResult: Type)(implicit ctx: Context): List[Type] = {
       def extractorMemberType(tp: Type, name: Name) = {
@@ -608,8 +608,8 @@ trait Applications extends Compatibility { self: Typer =>
       // println(s"unapply $unapplyResult ${extractorMemberType(unapplyResult, nme.isDefined)}")
       if (extractorMemberType(unapplyResult, nme.isDefined) isRef defn.BooleanClass) {
         if (getTp.exists)
-          if (unapply.symbol.name == nme.unapplySeq) {
-            val seqArg = getTp.firstBaseTypeArg(defn.SeqClass)
+          if (unapplyFn.symbol.name == nme.unapplySeq) {
+            val seqArg = boundsToHi(getTp.firstBaseArgInfo(defn.SeqClass))
             if (seqArg.exists) return args map Function.const(seqArg)
           }
           else return getSelectors(getTp)
@@ -633,7 +633,7 @@ trait Applications extends Compatibility { self: Typer =>
         case _ => false
       }
 
-    unapply.tpe.widen match {
+    unapplyFn.tpe.widen match {
       case mt: MethodType if mt.paramTypes.length == 1 && !mt.isDependent =>
         val unapplyArgType = mt.paramTypes.head
         unapp.println(s"unapp arg tpe = ${unapplyArgType.show}, pt = ${pt.show}")
@@ -660,7 +660,7 @@ trait Applications extends Compatibility { self: Typer =>
                   // can open unsoundness holes. See SI-7952 for an example of the hole this opens.
                   if (ctx.settings.verbose.value) ctx.warning(msg, tree.pos)
                 } else {
-                  unapp.println(s" ${unapply.symbol.owner} ${unapply.symbol.owner is Scala2x}")
+                  unapp.println(s" ${unapplyFn.symbol.owner} ${unapplyFn.symbol.owner is Scala2x}")
                   ctx.error(msg, tree.pos)
                 }
               case _ =>
@@ -676,15 +676,19 @@ trait Applications extends Compatibility { self: Typer =>
           }
 
         val dummyArg = dummyTreeOfType(unapplyArgType)
-        val unapplyApp = typedExpr(untpd.TypedSplice(Apply(unapply, dummyArg :: Nil)))
+        val unapplyApp = typedExpr(untpd.TypedSplice(Apply(unapplyFn, dummyArg :: Nil)))
         val unapplyImplicits = unapplyApp match {
           case Apply(Apply(unapply, `dummyArg` :: Nil), args2) => assert(args2.nonEmpty); args2
           case Apply(unapply, `dummyArg` :: Nil) => Nil
         }
 
         var argTypes = unapplyArgs(unapplyApp.tpe)
+        for (argType <- argTypes) assert(!argType.isInstanceOf[TypeBounds], unapplyApp.tpe.show)
         val bunchedArgs = argTypes match {
-          case argType :: Nil if argType.isRepeatedParam => untpd.SeqLiteral(args) :: Nil
+          case argType :: Nil =>
+            if (argType.isRepeatedParam) untpd.SeqLiteral(args) :: Nil
+            else if (args.lengthCompare(1) > 0 && ctx.canAutoTuple) untpd.Tuple(args) :: Nil
+            else args
           case _ => args
         }
         if (argTypes.length != bunchedArgs.length) {
@@ -693,12 +697,12 @@ trait Applications extends Compatibility { self: Typer =>
             List.fill(argTypes.length - args.length)(WildcardType)
         }
         val unapplyPatterns = (bunchedArgs, argTypes).zipped map (typed(_, _))
-        val result = cpy.UnApply(tree, unapply, unapplyImplicits, unapplyPatterns) withType ownType
+        val result = assignType(cpy.UnApply(tree, unapplyFn, unapplyImplicits, unapplyPatterns), ownType)
         unapp.println(s"unapply patterns = $unapplyPatterns")
         if ((ownType eq pt) || ownType.isError) result
         else Typed(result, TypeTree(ownType))
       case tp =>
-        val unapplyErr = if (tp.isError) unapply else notAnExtractor(unapply)
+        val unapplyErr = if (tp.isError) unapplyFn else notAnExtractor(unapplyFn)
         val typedArgsErr = args mapconserve (typed(_, defn.AnyType))
         cpy.UnApply(tree, unapplyErr, Nil, typedArgsErr) withType ErrorType
     }
@@ -708,7 +712,7 @@ trait Applications extends Compatibility { self: Typer =>
    *  @param  resultType   The expected result type of the application
    */
   def isApplicable(methRef: TermRef, targs: List[Type], args: List[Tree], resultType: Type)(implicit ctx: Context): Boolean = {
-    val nestedContext = ctx.fresh.withExploreTyperState
+    val nestedContext = ctx.fresh.setExploreTyperState
     new ApplicableToTrees(methRef, targs, args, resultType)(nestedContext).success
   }
 
@@ -716,7 +720,7 @@ trait Applications extends Compatibility { self: Typer =>
    *  @param  resultType   The expected result type of the application
    */
   def isApplicable(methRef: TermRef, args: List[Type], resultType: Type)(implicit ctx: Context): Boolean = {
-    val nestedContext = ctx.fresh.withExploreTyperState
+    val nestedContext = ctx.fresh.setExploreTyperState
     new ApplicableToTypes(methRef, args, resultType)(nestedContext).success
   }
 
@@ -770,7 +774,7 @@ trait Applications extends Compatibility { self: Typer =>
         val tparams = ctx.newTypeParams(alt1.symbol.owner, tp1.paramNames, EmptyFlags, bounds)
         isAsSpecific(alt1, tp1.instantiate(tparams map (_.typeRef)), alt2, tp2)
       case tp1: MethodType =>
-        def repeatedToSingle(tp: Type) = if (tp.isRepeatedParam) tp.typeArgs.head else tp
+        def repeatedToSingle(tp: Type) = if (tp.isRepeatedParam) tp.argTypesHi.head else tp
         isApplicable(alt2, tp1.paramTypes map repeatedToSingle, WildcardType) ||
         tp1.paramTypes.isEmpty && tp2.isInstanceOf[MethodOrPoly]
       case _ =>
@@ -781,9 +785,13 @@ trait Applications extends Compatibility { self: Typer =>
     }}
 
     /** Drop any implicit parameter section */
-    def stripImplicit(tp: Type) = tp match {
-      case mt: ImplicitMethodType if !mt.isDependent => mt.resultType // todo: make sure implicit method types are not dependent
-      case _ => tp
+    def stripImplicit(tp: Type): Type = tp match {
+      case mt: ImplicitMethodType if !mt.isDependent =>
+        mt.resultType // todo: make sure implicit method types are not dependent
+      case pt: PolyType =>
+        pt.derivedPolyType(pt.paramNames, pt.paramBounds, stripImplicit(pt.resultType))
+      case _ =>
+        tp
     }
 
     val owner1 = alt1.symbol.owner
@@ -795,6 +803,8 @@ trait Applications extends Compatibility { self: Typer =>
     def winsType1  = isAsSpecific(alt1, tp1, alt2, tp2)
     def winsOwner2 = isDerived(owner2, owner1)
     def winsType2  = isAsSpecific(alt2, tp2, alt1, tp1)
+
+    implicits.println(i"isAsGood($alt1, $alt2)? $tp1 $tp2 $winsOwner1 $winsType1 $winsOwner2 $winsType2")
 
     // Assume the following probabilities:
     //

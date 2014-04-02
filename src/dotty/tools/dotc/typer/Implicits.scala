@@ -20,8 +20,8 @@ import Decorators._
 import Names._
 import StdNames._
 import Constants._
-import Inferencing._
 import Applications._
+import ProtoTypes._
 import ErrorReporting._
 import Hashable._
 import config.Config
@@ -50,22 +50,22 @@ object Implicits {
           case mt: MethodType =>
             mt.isImplicit ||
             mt.paramTypes.length != 1 ||
-            !(argType <:< mt.paramTypes.head)(ctx.fresh.withExploreTyperState)
+            !(argType <:< mt.paramTypes.head)(ctx.fresh.setExploreTyperState)
           case poly: PolyType =>
             poly.resultType match {
               case mt: MethodType =>
                 mt.isImplicit ||
                 mt.paramTypes.length != 1 ||
-                !(argType <:< ((new WildApprox) apply mt.paramTypes.head))(ctx.fresh.withExploreTyperState)
+                !(argType <:< wildApprox(mt.paramTypes.head)(ctx.fresh.setExploreTyperState))
               case rtp =>
-                discardForView((new WildApprox) apply rtp, argType)
+                discardForView(wildApprox(rtp), argType)
             }
           case tpw: TermRef =>
             false // can't discard overloaded refs
           case tpw =>
             //if (ctx.typer.isApplicable(tp, argType :: Nil, resultType))
             //  println(i"??? $tp is applicable to $this / typeSymbol = ${tpw.typeSymbol}")
-            true
+            !tpw.derivesFrom(defn.FunctionClass(1))
         }
 
         def discardForValueType(tpw: Type): Boolean = tpw match {
@@ -76,7 +76,7 @@ object Implicits {
 
         def discard = pt match {
           case pt: ViewProto => discardForView(ref.widen, pt.argType)
-          case _: ValueType => !defn.isFunctionType(pt) && discardForValueType(ref.widen)
+          case _: ValueTypeOrProto => !defn.isFunctionType(pt) && discardForValueType(ref.widen)
           case _ => false
         }
 
@@ -90,7 +90,7 @@ object Implicits {
       }
 
       if (refs.isEmpty) refs
-      else refs filter (refMatches(_)(ctx.fresh.withExploreTyperState.addMode(Mode.TypevarsMissContext))) // create a defensive copy of ctx to avoid constraint pollution
+      else refs filter (refMatches(_)(ctx.fresh.setExploreTyperState.addMode(Mode.TypevarsMissContext))) // create a defensive copy of ctx to avoid constraint pollution
     }
   }
 
@@ -269,7 +269,8 @@ trait ImplicitRunInfo { self: RunInfo =>
      *  abstract types are eliminated.
      */
     object liftToClasses extends TypeMap {
-      private implicit val ctx: Context = liftingCtx
+      override implicit protected val ctx: Context = liftingCtx
+      override def stopAtStatic = true
       def apply(tp: Type) = tp match {
         case tp: TypeRef if tp.symbol.isAbstractOrAliasType =>
           val pre = tp.prefix
@@ -346,6 +347,8 @@ trait ImplicitRunInfo { self: RunInfo =>
   val useCount = new mutable.HashMap[TermRef, Int] {
     override def default(key: TermRef) = 0
   }
+
+  def clear() = implicitScopeCache.clear()
 }
 
 /** The implicit resolution part of type checking */
@@ -367,7 +370,7 @@ trait Implicits { self: Typer =>
              }
            case _ =>
          }
-         inferView(dummyTreeOfType(from), to)(ctx.fresh.withExploreTyperState).isInstanceOf[SearchSuccess]
+         inferView(dummyTreeOfType(from), to)(ctx.fresh.setExploreTyperState).isInstanceOf[SearchSuccess]
        }
     )
 
@@ -416,12 +419,7 @@ trait Implicits { self: Typer =>
   /** An implicit search; parameters as in `inferImplicit` */
   class ImplicitSearch(protected val pt: Type, protected val argument: Tree, pos: Position)(implicit ctx: Context) {
 
-    pt match {
-      case pt: TypeVar => assert(pt.isInstantiated) //!!! DEBUG
-      case _ =>
-    }
-
-    private def nestedContext = ctx.fresh.withNewMode(ctx.mode &~ Mode.ImplicitsEnabled)
+    private def nestedContext = ctx.fresh.setMode(ctx.mode &~ Mode.ImplicitsEnabled)
 
     private def implicitProto(resultType: Type, f: Type => Type) =
       if (argument.isEmpty) f(resultType) else ViewProto(f(argument.tpe.widen), f(resultType))
@@ -439,7 +437,7 @@ trait Implicits { self: Typer =>
     }
 
     /** The expected type where parameters and uninstantiated typevars are replaced by wildcard types */
-    val wildProto = implicitProto(pt, new WildApprox)
+    val wildProto = implicitProto(pt, wildApprox(_))
 
     /** Search failures; overridden in ExplainedImplicitSearch */
     protected def nonMatchingImplicit(ref: TermRef): SearchFailure = NoImplicitMatches
@@ -459,7 +457,7 @@ trait Implicits { self: Typer =>
             pt)
         val generated1 = adapt(generated, pt)
         lazy val shadowing =
-          typed(untpd.Ident(ref.name) withPos pos.toSynthetic, funProto)(nestedContext.withNewTyperState)
+          typed(untpd.Ident(ref.name) withPos pos.toSynthetic, funProto)(nestedContext.setNewTyperState)
         def refMatches(shadowing: Tree): Boolean =
           ref.symbol == closureBody(shadowing).symbol || {
             shadowing match {
@@ -487,12 +485,12 @@ trait Implicits { self: Typer =>
           val history = ctx.searchHistory nest wildProto
           val result =
             if (history eq ctx.searchHistory) divergingImplicit(ref)
-            else typedImplicit(ref)(nestedContext.withNewTyperState.withSearchHistory(history))
+            else typedImplicit(ref)(nestedContext.setNewTyperState.setSearchHistory(history))
           result match {
             case fail: SearchFailure =>
               rankImplicits(pending1, acc)
             case best: SearchSuccess =>
-              val newPending = pending1 filter (isAsGood(_, best.ref)(nestedContext.withExploreTyperState))
+              val newPending = pending1 filter (isAsGood(_, best.ref)(nestedContext.setExploreTyperState))
               rankImplicits(newPending, best :: acc)
           }
         case nil => acc
@@ -501,7 +499,7 @@ trait Implicits { self: Typer =>
       /** Convert a (possibly empty) list of search successes into a single search result */
       def condense(hits: List[SearchSuccess]): SearchResult = hits match {
         case best :: alts =>
-          alts find (alt => isAsGood(alt.ref, best.ref)(ctx.fresh.withExploreTyperState)) match {
+          alts find (alt => isAsGood(alt.ref, best.ref)(ctx.fresh.setExploreTyperState)) match {
             case Some(alt) =>
             /* !!! DEBUG
               println(i"ambiguous refs: ${hits map (_.ref) map (_.show) mkString ", "}")
@@ -626,7 +624,8 @@ class SearchHistory(val searchDepth: Int, val seen: Map[ClassSymbol, Int]) {
 
 /** A set of term references where equality is =:= */
 class TermRefSet(implicit ctx: Context) extends mutable.Traversable[TermRef] {
-  private val elems = new mutable.LinkedHashMap[TermSymbol, List[Type]] // todo: change to j.u.LinkedHashMap?
+  import collection.JavaConverters._
+  private val elems = (new java.util.LinkedHashMap[TermSymbol, List[Type]]).asScala
 
   def += (ref: TermRef): Unit = {
     val pre = ref.prefix

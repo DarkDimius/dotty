@@ -11,7 +11,7 @@ object parsePackage extends ParserTest {
 
   var nodes = 0
 
-  val transformer = new UntypedTreeTransformer {
+  val transformer = new UntypedTreeMap {
     override def transform(tree: Tree)(implicit ctx: Context): Tree = {
       nodes += 1
       tree match {
@@ -65,8 +65,8 @@ object parsePackage extends ParserTest {
     reset()
     nodes = 0
     val start = System.nanoTime()
-    parseDir("/Users/odersky/workspace/dotty/src")
-    parseDir("/Users/odersky/workspace/scala/src")
+    parseDir("./src")
+    parseDir("../scala/src")
     val ms1 = (System.nanoTime() - start)/1000000
     val buf = parsedTrees map transformer.transform
     val ms2 = (System.nanoTime() - start)/1000000

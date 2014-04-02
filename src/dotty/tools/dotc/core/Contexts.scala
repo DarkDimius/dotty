@@ -25,7 +25,7 @@ import collection.immutable.BitSet
 import printing._
 import config.{Settings, ScalaSettings, Platform, JavaPlatform}
 import language.implicitConversions
-
+import DenotTransformers.DenotTransformer
 object Contexts {
 
   /** A context is passed basically everywhere in dotc.
@@ -119,10 +119,11 @@ object Contexts {
     protected def scope_=(scope: Scope) = _scope = scope
     def scope: Scope = _scope
 
-    /** The current typer */
-    private[this] var _typer: Typer = _
-    protected def typer_=(typer: Typer) = _typer = typer
-    def typer: Typer = _typer
+    /** The current type assigner ot typer */
+    private[this] var _typeAssigner: TypeAssigner = _
+    protected def typeAssigner_=(typeAssigner: TypeAssigner) = _typeAssigner = typeAssigner
+    def typeAssigner: TypeAssigner = _typeAssigner
+    def typer: Typer = _typeAssigner.asInstanceOf[Typer]
 
     /** The currently active import info */
     private[this] var _importInfo: ImportInfo = _
@@ -180,7 +181,37 @@ object Contexts {
     protected def searchHistory_= (searchHistory: SearchHistory) = _searchHistory = searchHistory
     def searchHistory: SearchHistory = _searchHistory
 
-  /** If -Ydebug is on, the top of the stack trace where this context
+    /** Those fields are used to cache phases created in withPhase.
+      * phasedCtx is first phase with altered phase ever requested.
+      * phasedCtxs is array that uses phaseId's as indexes,
+      * contexts are created only on request and cached in this array
+      */
+    private var phasedCtx: Context = _
+    private var phasedCtxs: Array[Context] = _
+
+
+    /** This context at given phase.
+     *  This method will always return a phase period equal to phaseId, thus will never return squashed phases
+     */
+    final def withPhase(phaseId: PhaseId): Context = {
+      if (this.phaseId == phaseId) this
+      else if (phasedCtx.phaseId == phaseId) phasedCtx
+      else if (phasedCtxs != null && phasedCtxs(phaseId) != null) phasedCtxs(phaseId)
+      else {
+        val ctx1 = fresh.setPhase(phaseId)
+        if (phasedCtx eq this) phasedCtx = ctx1
+        else {
+          if (phasedCtxs == null) phasedCtxs = new Array[Context](base.phases.length)
+          phasedCtxs(phaseId) = ctx1
+        }
+        ctx1
+      }
+    }
+
+    final def withPhase(phase: Phase): Context =
+      withPhase(phase.id)
+
+   /** If -Ydebug is on, the top of the stack trace where this context
      *  was created, otherwise `null`.
      */
     private var creationTrace: Array[StackTraceElement] = _
@@ -246,7 +277,6 @@ object Contexts {
 
     /** A condensed context containing essential information of this but
      *  no outer contexts except the initial context.
-     */
     private var _condensed: CondensedContext = null
     def condensed: CondensedContext = {
       if (_condensed eq outer.condensed)
@@ -264,20 +294,25 @@ object Contexts {
           .withMoreProperties(moreProperties)
       _condensed
     }
+    */
 
-    /** A fresh clone of this context. */
-    def fresh: FreshContext = {
-      val newctx: Context = super.clone.asInstanceOf[FreshContext]
-      newctx.outer = this
-      newctx.implicitsCache = null
-      newctx.setCreationTrace()
-        // Dotty deviation: Scala2x allows access to private members implicitCache and setCreationTrace
-        // even from a subclass prefix. Dotty (and Java) do not. I think that's a bug in Scala2x.
-      newctx.asInstanceOf[FreshContext]
+    protected def init(outer: Context): this.type = {
+      this.outer = outer
+      this.implicitsCache = null
+      this.phasedCtx = this
+      this.phasedCtxs = null
+      setCreationTrace()
+      this
     }
 
+    /** A fresh clone of this context. */
+    def fresh: FreshContext = clone.asInstanceOf[FreshContext].init(this)
+
+    final def withOwner(owner: Symbol): Context =
+      if (owner ne this.owner) fresh.setOwner(owner) else this
+
     final def withMode(mode: Mode): Context =
-      if (mode != this.mode) fresh.withNewMode(mode) else this
+      if (mode != this.mode) fresh.setMode(mode) else this
 
     final def addMode(mode: Mode): Context = withMode(this.mode | mode)
     final def maskMode(mode: Mode): Context = withMode(this.mode & mode)
@@ -291,43 +326,45 @@ object Contexts {
   /** A condensed context provides only a small memory footprint over
    *  a Context base, and therefore can be stored without problems in
    *  long-lived objects.
-   */
   abstract class CondensedContext extends Context {
     override def condensed = this
   }
+  */
 
   /** A fresh context allows selective modification
    *  of its attributes using the with... methods.
    */
-  abstract class FreshContext extends CondensedContext {
-    def withPeriod(period: Period): this.type = { this.period = period; this }
-    def withNewMode(mode: Mode): this.type = { this.mode = mode; this }
-    def withTyperState(typerState: TyperState): this.type = { this.typerState = typerState; this }
-    def withNewTyperState: this.type = withTyperState(typerState.fresh(isCommittable = true))
-    def withExploreTyperState: this.type = withTyperState(typerState.fresh(isCommittable = false))
-    def withPrinterFn(printer: Context => Printer): this.type = { this.printerFn = printer; this }
-    def withOwner(owner: Symbol): this.type = { assert(owner != NoSymbol); this.owner = owner; this }
-    def withSettings(sstate: SettingsState): this.type = { this.sstate = sstate; this }
-    def withCompilationUnit(compilationUnit: CompilationUnit): this.type = { this.compilationUnit = compilationUnit; this }
-    def withTree(tree: Tree[_ >: Untyped]): this.type = { this.tree = tree; this }
-    def withScope(scope: Scope): this.type = { this.scope = scope; this }
-    def withNewScope: this.type = { this.scope = newScope; this }
-    def withTyper(typer: Typer): this.type = { this.typer = typer; this.scope = typer.scope; this }
-    def withImportInfo(importInfo: ImportInfo): this.type = { this.importInfo = importInfo; this }
-    def withRunInfo(runInfo: RunInfo): this.type = { this.runInfo = runInfo; this }
-    def withDiagnostics(diagnostics: Option[StringBuilder]): this.type = { this.diagnostics = diagnostics; this }
-    def withTypeComparerFn(tcfn: Context => TypeComparer): this.type = { this.typeComparer = tcfn(this); this }
-    def withSearchHistory(searchHistory: SearchHistory): this.type = { this.searchHistory = searchHistory; this }
-    def withMoreProperties(moreProperties: Map[String, Any]): this.type = { this.moreProperties = moreProperties; this }
+  abstract class FreshContext extends Context {
+    def setPeriod(period: Period): this.type = { this.period = period; this }
+    def setMode(mode: Mode): this.type = { this.mode = mode; this }
+    def setTyperState(typerState: TyperState): this.type = { this.typerState = typerState; this }
+    def setNewTyperState: this.type = setTyperState(typerState.fresh(isCommittable = true))
+    def setExploreTyperState: this.type = setTyperState(typerState.fresh(isCommittable = false))
+    def setPrinterFn(printer: Context => Printer): this.type = { this.printerFn = printer; this }
+    def setOwner(owner: Symbol): this.type = { assert(owner != NoSymbol); this.owner = owner; this }
+    def setSettings(sstate: SettingsState): this.type = { this.sstate = sstate; this }
+    def setCompilationUnit(compilationUnit: CompilationUnit): this.type = { this.compilationUnit = compilationUnit; this }
+    def setTree(tree: Tree[_ >: Untyped]): this.type = { this.tree = tree; this }
+    def setScope(scope: Scope): this.type = { this.scope = scope; this }
+    def setNewScope: this.type = { this.scope = newScope; this }
+    def setTypeAssigner(typeAssigner: TypeAssigner): this.type = { this.typeAssigner = typeAssigner; this }
+    def setTyper(typer: Typer): this.type = { this.scope = typer.scope; setTypeAssigner(typer) }
+    def setImportInfo(importInfo: ImportInfo): this.type = { this.importInfo = importInfo; this }
+    def setRunInfo(runInfo: RunInfo): this.type = { this.runInfo = runInfo; this }
+    def setDiagnostics(diagnostics: Option[StringBuilder]): this.type = { this.diagnostics = diagnostics; this }
+    def setTypeComparerFn(tcfn: Context => TypeComparer): this.type = { this.typeComparer = tcfn(this); this }
+    def setSearchHistory(searchHistory: SearchHistory): this.type = { this.searchHistory = searchHistory; this }
+    def setMoreProperties(moreProperties: Map[String, Any]): this.type = { this.moreProperties = moreProperties; this }
 
-    def withProperty(prop: (String, Any)): this.type = withMoreProperties(moreProperties + prop)
+    def setProperty(prop: (String, Any)): this.type = setMoreProperties(moreProperties + prop)
 
-    def withPhase(pid: PhaseId): this.type = withPeriod(Period(runId, pid))
+    def setPhase(pid: PhaseId): this.type = setPeriod(Period(runId, pid))
+    def setPhase(phase: Phase): this.type = setPeriod(Period(runId, phase.start, phase.end))
 
-    def withSetting[T](setting: Setting[T], value: T): this.type =
-      withSettings(setting.updateIn(sstate, value))
+    def setSetting[T](setting: Setting[T], value: T): this.type =
+      setSettings(setting.updateIn(sstate, value))
 
-    def withDebug = withSetting(base.settings.debug, true)
+    def setDebug = setSetting(base.settings.debug, true)
   }
 
   /** A class defining the initial context with given context base
@@ -342,6 +379,7 @@ object Contexts {
     owner = NoSymbol
     sstate = settings.defaultState
     tree = untpd.EmptyTree
+    typeAssigner = TypeAssigner
     runInfo = new RunInfo(this)
     diagnostics = None
     moreProperties = Map.empty
@@ -358,7 +396,6 @@ object Contexts {
    *  compiler run.
    */
   class ContextBase extends ContextState
-                       with Transformers.TransformerBase
                        with Denotations.DenotationsBase
                        with Phases.PhasesBase {
 
@@ -384,10 +421,10 @@ object Contexts {
     def rootLoader(root: TermSymbol)(implicit ctx: Context): SymbolLoader = platform.rootLoader(root)
 
     // Set up some phases to get started */
-    usePhases(SomePhase :: Nil)
+    usePhases(List(List(SomePhase)))
 
     /** The standard definitions */
-    val definitions = new Definitions()(initialCtx)
+    val definitions = new Definitions
   }
 
   /** The essential mutable state of a context base, collected into a common class */
@@ -401,35 +438,28 @@ object Contexts {
     def nextId = { _nextId += 1; _nextId }
 
     /** A map from a superclass id to the typeref of the class that has it */
-    private[core] var classOfId = new Array[TypeRef](InitialSuperIdsSize)
+    private[core] var classOfId = new Array[ClassSymbol](InitialSuperIdsSize)
 
     /** A map from a the typeref of a class to its superclass id */
-    private[core] val superIdOfClass = new mutable.AnyRefMap[TypeRef, Int]
+    private[core] val superIdOfClass = new mutable.AnyRefMap[ClassSymbol, Int]
 
     /** The last allocated superclass id */
     private[core] var lastSuperId = -1
 
     /** Allocate and return next free superclass id */
     private[core] def nextSuperId: Int = {
-      lastSuperId += 1;
+      lastSuperId += 1
       if (lastSuperId >= classOfId.length) {
-        val tmp = new Array[TypeRef](classOfId.length * 2)
+        val tmp = new Array[ClassSymbol](classOfId.length * 2)
         classOfId.copyToArray(tmp)
         classOfId = tmp
       }
       lastSuperId
     }
 
-    // SymDenotations state
-    /** A table where unique superclass bits are kept.
-     *  These are bitsets that contain the superclass ids of all base classes of a class.
-     *  Used to speed up isSubClass tests.
-     */
-    private[core] val uniqueBits = new util.HashSet[BitSet]("superbits", 1024)
-
     // Types state
     /** A table for hash consing unique types */
-    private[core] val uniques = new util.HashSet[Type]("uniques", initialUniquesCapacity) {
+    private[core] val uniques = new util.HashSet[Type](initialUniquesCapacity) {
       override def hash(x: Type): Int = x.hash
     }
 
@@ -442,11 +472,14 @@ object Contexts {
     /** A table for hash consing unique type bounds */
     private[core] val uniqueTypeBounds = new TypeBoundsUniques
 
-    private def uniqueMaps = List(uniques, uniqueRefinedTypes, uniqueNamedTypes, uniqueTypeBounds)
+    private def uniqueSets = Map(
+        "uniques" -> uniques,
+        "uniqueRefinedTypes" -> uniqueRefinedTypes,
+        "uniqueNamedTypes" -> uniqueNamedTypes,
+        "uniqueTypeBounds" -> uniqueTypeBounds)
 
     /** A map that associates label and size of all uniques sets */
-    def uniquesSize: Map[String, Int] =
-      uniqueMaps.map(m => m.label -> m.size).toMap
+    def uniquesSizes: Map[String, Int] = uniqueSets.mapValues(_.size)
 
     /** The number of recursive invocation of underlying on a NamedType
      *  during a controlled operation.
@@ -461,6 +494,14 @@ object Contexts {
     /** Phases by id */
     private[core] var phases: Array[Phase] = _
 
+    /** Phases with consecutive Transforms groupped into a single phase */
+    private [core] var squashedPhases: Array[Phase] = _
+
+    /** Next denotation transformer id */
+    private[core] var nextDenotTransformerId: Array[Int] = _
+
+    private[core] var denotTransformers: Array[DenotTransformer] = _
+
     // Printers state
     /** Number of recursive invocations of a show method on cuyrrent stack */
     private[dotc] var toTextRecursions = 0
@@ -472,6 +513,13 @@ object Contexts {
 
     /** Should warnings and errors containing non-sensical strings be suppressed? */
     private[dotc] var suppressNonSensicalErrors = true
+
+    def reset() = {
+      for ((_, set) <- uniqueSets) set.clear()
+      for (i <- 0 until classOfId.length) classOfId(i) = null
+      superIdOfClass.clear()
+      lastSuperId = -1
+    }
   }
 
   object Context {
@@ -486,7 +534,7 @@ object Contexts {
   }
 
   /** Info that changes on each compiler run */
-  class RunInfo(initctx: Context) extends ImplicitRunInfo {
+  class RunInfo(initctx: Context) extends ImplicitRunInfo with ConstraintRunInfo {
     implicit val ctx: Context = initctx
   }
 
