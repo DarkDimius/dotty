@@ -245,7 +245,7 @@ trait Symbols { this: Context =>
     for (name <- names) {
       val tparam = newNakedSymbol[TypeName](NoCoord)
       tparamBuf += tparam
-      trefBuf += TypeRef(owner.thisType, name) withSym tparam
+      trefBuf += TypeRef.withSymAndName(owner.thisType, tparam, name)
     }
     val tparams = tparamBuf.toList
     val bounds = boundsFn(trefBuf.toList)

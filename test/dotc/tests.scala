@@ -22,14 +22,14 @@ class tests extends CompilerTest {
   val newDir = "./tests/new/"
   val dotcDir = "./src/dotty/"
 
-  @Test def pos_erasure = compileFile(posDir, "erasure", doErase)
+  /*@Test def pos_erasure = compileFile(posDir, "erasure", doErase)
   @Test def pos_Coder() = compileFile(posDir, "Coder", doErase)
   @Test def pos_blockescapes() = compileFile(posDir, "blockescapes", doErase)
   @Test def pos_collections() = compileFile(posDir, "collections", doErase)
   @Test def pos_functions1() = compileFile(posDir, "functions1", doErase)
   @Test def pos_implicits1() = compileFile(posDir, "implicits1", doErase)
   @Test def pos_inferred() = compileFile(posDir, "inferred", doErase)
-  @Test def pos_Patterns() = compileFile(posDir, "Patterns", doErase)
+*/  @Test def pos_Patterns() = compileFile(posDir, "Patterns", doErase) /*
   @Test def pos_selftypes() = compileFile(posDir, "selftypes", doErase)
   @Test def pos_varargs() = compileFile(posDir, "varargs", doErase)
   @Test def pos_opassign() = compileFile(posDir, "opassign", doErase)
@@ -37,7 +37,7 @@ class tests extends CompilerTest {
   @Test def pos_nameddefaults() = compileFile(posDir, "nameddefaults", doErase)
   @Test def pos_desugar() = compileFile(posDir, "desugar", doErase)
   @Test def pos_sigs() = compileFile(posDir, "sigs", doErase)
-  @Test def pos_typers() = compileFile(posDir, "typers", doErase)
+*  @Test def pos_typers() = compileFile(posDir, "typers", doErase)
   @Test def pos_typedidents() = compileFile(posDir, "typedIdents", doErase)
   @Test def pos_assignments() = compileFile(posDir, "assignments", doErase)
   @Test def pos_packageobject() = compileFile(posDir, "packageobject", doErase)
@@ -49,9 +49,9 @@ class tests extends CompilerTest {
   @Test def pos_approximateUnion = compileFile(posDir, "approximateUnion", doErase)
 
   @Test def pos_all = compileFiles(posDir, twice)
-  @Test def new_all = compileFiles(newDir, twice)
+  @Test def new_all = compileFiles(newDir, twice)*/
 
-  @Test def neg_blockescapes() = compileFile(negDir, "blockescapesNeg", xerrors = 1)
+  /*@Test def neg_blockescapes() = compileFile(negDir, "blockescapesNeg", xerrors = 1)
   @Test def neg_typedapply() = compileFile(negDir, "typedapply", xerrors = 4)
   @Test def neg_typedidents() = compileFile(negDir, "typedIdents", xerrors = 2)
   @Test def neg_assignments() = compileFile(negDir, "assignments", xerrors = 3)
@@ -95,7 +95,7 @@ class tests extends CompilerTest {
       dotcDir + "tools/dotc/config/PathResolver.scala",
       "-Ylog:frontend",
       "-Xprompt",
-      "#runs", "2"))
+      "#runs", "2"))*/
 
   //@Test def dotc_compilercommand = compileFile(dotcDir + "tools/dotc/config/", "CompilerCommand")
 }
