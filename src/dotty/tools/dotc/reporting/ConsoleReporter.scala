@@ -47,9 +47,9 @@ class ConsoleReporter(
     }
 
   def displayPrompt(): Unit = {
-    writer.print("\na)bort, s)tack, r)esume: ")
-    writer.flush()
     if (reader != null) {
+      writer.print("\na)bort, s)tack, r)esume: ")
+      writer.flush()
       val response = reader.read().asInstanceOf[Char].toLower
       if (response == 'a' || response == 's') {
         (new Exception).printStackTrace()
