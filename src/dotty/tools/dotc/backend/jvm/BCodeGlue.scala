@@ -15,9 +15,15 @@ import core.Contexts.Context
 import core.Types.Type
 import core.Symbols.{Symbol, NoSymbol}
 import core.SymDenotations.SymDenotation
-import core.Flags
+import dotty.tools.dotc.core._
 import core.NameOps._
 import core.Names.Name
+import Symbols._
+import util.Positions._, Types._, Contexts._, Constants._, Names._, NameOps._, Flags._
+import dotty.tools.dotc.ast.Trees
+import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._
+import Decorators._
+import core.SymDenotations._
 
 /*
  *  Immutable representations of bytecode-level types.
@@ -26,7 +32,7 @@ import core.Names.Name
  *  @version 1.0
  *
  */
-abstract class BCodeGlue {
+abstract class BCodeGlue extends HasContext{
 
   object BType {
 
@@ -740,7 +746,7 @@ abstract class BCodeGlue {
     //   !isMethod && !isImplClass && !isJavaDefined
     // Moreover, it checks for the `Module` flag instead of `ModuleClass`.
     // I assume only a ModuleClass should ever get a moduleClassName.
-    if (symDenot is Flags.ModuleClass) name.moduleClassName
+    if (symDenot.flags is Flags.ModuleClass) name.moduleClassName
     else name
   }
 }

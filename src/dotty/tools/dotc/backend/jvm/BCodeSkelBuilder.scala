@@ -14,7 +14,16 @@ import dotty.tools.asm
 import ast.Trees._
 import core.Contexts.Context
 import core.Types.Type
-import core.Symbols.{Symbol, NoSymbol}
+import dotty.tools.dotc.core._
+import Symbols._
+import util.Positions._, Types._, Contexts._, Constants._, Names._, NameOps._, Flags._
+import dotty.tools.dotc.ast.{tpd, Trees}
+import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._
+import Decorators._
+import core.SymDenotations._
+import ast.Trees._
+import dotty.tools.dotc.core.Symbols.{ClassSymbol, Symbol, NoSymbol}
+import dotty.tools.dotc.core.Flags
 
 /*
  *
@@ -61,7 +70,7 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
     var cnode: asm.tree.ClassNode  = null
     var thisName: String           = null // the internal name of the class being emitted
 
-    var claszSymbol: Symbol        = null
+    var claszSymbol: ClassSymbol        = null
     var isCZParcelable             = false
     var isCZStaticModule           = false
     var isCZRemote                 = false
@@ -88,7 +97,7 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
       assert(cnode == null, "GenBCode detected nested methods.")
       innerClassBufferASM.clear()
 
-      claszSymbol       = cd.symbol
+      claszSymbol       = cd.symbol.asClass
       isCZParcelable    = isAndroidParcelableClass(claszSymbol)
       isCZStaticModule  = isStaticModule(claszSymbol)
       isCZRemote        = isRemote(claszSymbol)
@@ -113,7 +122,7 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
 
       innerClassBufferASM ++= trackMemberClasses(claszSymbol, Nil)
 
-      gen(cd.impl)
+      gen(cd.rhs)
 
       assert(cd.symbol == claszSymbol, "Someone messed up BCodePhase.claszSymbol during genPlainClass().")
 
@@ -161,9 +170,11 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
         cnode.visitOuterClass(className, methodName, methodType.getDescriptor)
       }
 
+      // dd todo:
+      /*
       val ssa = getAnnotPickle(thisName, claszSymbol)
       cnode.visitAttribute(if (ssa.isDefined) pickleMarkerLocal else pickleMarkerForeign)
-      emitAnnotations(cnode, claszSymbol.annotations ++ ssa)
+      emitAnnotations(cnode, claszSymbol.annotations ++ ssa)*/
 
       if (isCZStaticModule || isCZParcelable) {
 
@@ -171,18 +182,19 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
 
       } else {
 
-        val skipStaticForwarders = (claszSymbol.isInterface || ctx.settings.noForwarders)
+        val skipStaticForwarders = ((claszSymbol.flags is Flags.Interface) || ctx.settings.noForwarders.value)
         if (!skipStaticForwarders) {
           val lmoc = claszSymbol.companionModule
           // add static forwarders if there are no name conflicts; see bugs #363 and #1735
           if (lmoc != NoSymbol) {
             // it must be a top level class (name contains no $s)
             val isCandidateForForwarders = {
-              exitingPickler { !(lmoc.name.toString contains '$') && lmoc.hasModuleFlag && !(lmoc is Flags.ImplClass) && !lmoc.isNestedClass }
+              /*dd todo: exitingPickler*/ {
+                !(lmoc.name.toString contains '$') && (lmoc.flags is Flags.Module) && !(lmoc is Flags.ImplClass) && !lmoc.isNestedClass }
             }
             if (isCandidateForForwarders) {
               ctx.log(s"Adding static forwarders from '$claszSymbol' to implementations in '$lmoc'")
-              addForwarders(isRemote(claszSymbol), cnode, thisName, lmoc.moduleClass)
+              // addForwarders(isRemote(claszSymbol), cnode, thisName, lmoc.moduleClass) // dd: todo
             }
           }
         }
@@ -258,7 +270,8 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
           null // no initial value
         )
         cnode.fields.add(jfield)
-        emitAnnotations(jfield, f.annotations)
+        //dd todo:
+        // emitAnnotations(jfield, f.annotations)
       }
 
     } // end of method addClassFields()
@@ -294,14 +307,14 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
      *
      */
     var jumpDest: immutable.Map[ /* LabelDef */ Symbol, asm.Label ] = null
-    def programPoint(labelSym: Symbol): asm.Label = {
+    def programPoint(labelSym: Symbol): asm.Label = ??? /*{ //dd todo
       assert(labelSym.isLabel, s"trying to map a non-label symbol to an asm.Label, at: ${labelSym.pos}")
       jumpDest.getOrElse(labelSym, {
         val pp = new asm.Label
         jumpDest += (labelSym -> pp)
         pp
       })
-    }
+    }*/
 
     /*
      *  A program point may be lexically nested (at some depth)
@@ -369,8 +382,9 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
       /* Make a fresh local variable, ensuring a unique name.
        * The invoker must make sure inner classes are tracked for the sym's tpe.
        */
-      def makeLocal(tk: BType, name: String): Symbol = {
-        val locSym = methSymbol.newVariable(cunit.freshTermName(name), dotc.util.Positions.NoPosition, Flags.SYNTHETIC) // setInfo tpe
+      def makeLocal(tk: BType, name: String, tpe: Type): Symbol = {
+        val fname = ctx.freshName(name).toTermName
+        val locSym = ctx.newSymbol(methSymbol, fname, Flags.Synthetic, tpe)
         makeLocal(locSym, tk)
         locSym
       }
@@ -387,7 +401,7 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
       private def makeLocal(sym: Symbol, tk: BType): Local = {
         assert(!slots.contains(sym), "attempt to create duplicate local var.")
         assert(nxtIdx != -1, "not a valid start index")
-        val loc = Local(tk, javaName(sym).toString, nxtIdx, sym.isSynthetic)
+        val loc = Local(tk, javaName(sym).toString, nxtIdx, sym.flags is Flags.Synthetic)
         slots += (sym -> loc)
         assert(tk.getSize > 0, "makeLocal called for a symbol whose type is Unit.")
         nxtIdx += tk.getSize
@@ -430,7 +444,7 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
      *
      *  Details in `emitFinalizer()`, which is invoked from `genLoadTry()` and `genSynchronized()`.
      */
-    var labelDefsAtOrUnder: scala.collection.Map[Tree, List[LabelDef]] = null
+    // var labelDefsAtOrUnder: scala.collection.Map[Tree, List[LabelDef]] = null
     var labelDef: scala.collection.Map[Symbol, LabelDef] = null// (LabelDef-sym -> LabelDef)
 
     // bookkeeping the scopes of non-synthetic local vars, to emit debug info (`emitVars`).
@@ -476,10 +490,11 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
       locals.reset(isStaticMethod = methSymbol.isStaticMember)
       jumpDest = immutable.Map.empty[ /* LabelDef */ Symbol, asm.Label ]
       // populate labelDefsAtOrUnder
-      val ldf = new LabelDefsFinder
-      ldf.traverse(dd.rhs)
-      labelDefsAtOrUnder = ldf.result.withDefaultValue(Nil)
-      labelDef = labelDefsAtOrUnder(dd.rhs).map(ld => (ld.symbol -> ld)).toMap
+      //dd todo:
+      //val ldf = new LabelDefsFinder
+      //ldf.traverse(dd.rhs)
+      //labelDefsAtOrUnder = ldf.result.withDefaultValue(Nil)
+      //labelDef = labelDefsAtOrUnder(dd.rhs).map(ld => (ld.symbol -> ld)).toMap
       // check previous invocation of genDefDef exited as many varsInScope as it entered.
       assert(varsInScope == null, "Unbalanced entering/exiting of GenBCode's genBlock().")
       // check previous invocation of genDefDef unregistered as many cleanups as it registered.
@@ -497,13 +512,12 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
       tree match {
         case EmptyTree => ()
 
-        case _: ModuleDef => abort(s"Modules should have been eliminated by refchecks: $tree")
 
         case ValDef(mods, name, tpt, rhs) => () // fields are added in `genPlainClass()`, via `addClassFields()`
 
         case dd : DefDef => genDefDef(dd)
 
-        case Template(_, _, body) => body foreach gen
+        case Template(constr, parents, self, body) => (constr::body) foreach gen
 
         case _ => abort(s"Illegal tree in gen: $tree")
       }
@@ -588,11 +602,11 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
        * When duplicating a finally-contained LabelDef, another program-point is needed for the copy (each such copy has its own asm.Label),
        * but the same vars (given by the LabelDef's params) can be reused,
        * because no LabelDef ends up nested within itself after such duplication.
-       */
-      for(ld <- labelDefsAtOrUnder(dd.rhs); ldp <- ld.params; if !locals.contains(ldp.symbol)) {
+       *///dd todo:
+      /*for(ld <- labelDefsAtOrUnder(dd.rhs); ldp <- ld.params; if !locals.contains(ldp.symbol)) {
         // the tail-calls xform results in symbols shared btw method-params and labelDef-params, thus the guard above.
         locals.makeLocal(ldp.symbol)
-      }
+      }*/
 
       if (!isAbstractMethod && !isNative) {
 

@@ -83,6 +83,17 @@ object Types {
       case _ => false
     }
 
+    def paramTypes: List[Type] = this match {
+      case MethodType(_, types) => types
+      case _ => Nil
+    }
+
+    /** Can this type only be subtyped by bottom types?
+      *  This is assessed to be the case if the class is final,
+      *  and all type parameters (if any) are invariant.
+      */
+    def isFinalType:Boolean = ??? // typeSymbol.hasOnlyBottomSubclasses && prefix.isStable
+
     /** Is this type a (possibly aliased and/or partially applied) type reference
      *  to the given type symbol?
      *  @sym  The symbol to compare to. It must be a class symbol or abstract type.

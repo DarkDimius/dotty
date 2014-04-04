@@ -607,6 +607,7 @@ object StdNames {
     )
 
     def isReflectionCacheName(name: Name) = reflectionCacheNames exists (name startsWith _)
+    def isLocalName(name: Name)             = name endsWith LOCAL_SUFFIX
   }
 
   class ScalaTermNames extends ScalaNames[TermName] {

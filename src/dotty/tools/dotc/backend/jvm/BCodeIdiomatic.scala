@@ -694,8 +694,9 @@ abstract class BCodeIdiomatic extends BCodeGlue {
 
   def abort(msg: => AnyRef)(implicit ctx: Context): Nothing = {
     // TODO(lrytz) If this is indeed the right way to abort, this method should probably be added somewhere more centrally (Context?)
-    ctx.error(msg)
-    throw new FatalError(msg)
+    val err = msg.toString
+    ctx.error(err)
+    throw new FatalError(err)
   }
 
 }

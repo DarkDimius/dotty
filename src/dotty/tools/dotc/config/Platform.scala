@@ -21,6 +21,11 @@ abstract class Platform {
   /** The compiler classpath. */
   def classPath(implicit ctx: Context): ClassPath
 
+  def externalEquals(implicit ctx: Context): Symbol
+  def externalEqualsNumNum(implicit ctx: Context): Symbol
+  def externalEqualsNumChar(implicit ctx: Context): Symbol
+  def externalEqualsNumObject(implicit ctx: Context): Symbol
+
   /** Update classpath with a substitution that maps entries to entries */
   def updateClassPath(subst: Map[ClassPath, ClassPath]): Unit
 
@@ -28,7 +33,7 @@ abstract class Platform {
   //def platformPhases: List[SubComponent]
 
   /** The various ways a boxed primitive might materialize at runtime. */
-  def isMaybeBoxed(sym: ClassSymbol)(implicit ctx: Context): Boolean
+  def isMaybeBoxed(sym: Symbol)(implicit ctx: Context): Boolean
 
   /** Create a new class loader to load class file `bin` */
   def newClassLoader(bin: AbstractFile)(implicit ctx: Context): SymbolLoader

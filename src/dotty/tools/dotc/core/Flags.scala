@@ -359,6 +359,8 @@ object Flags {
   /** Denotation is in train of being loaded and completed, used to catch cyclic dependencies */
   final val Touched = commonFlag(48, "<touched>")
 
+  final val Enum = Touched
+
   /** Class is not allowed to accept new members because fingerprint of subclass has been taken */
   final val Frozen = commonFlag(49, "<frozen>")
 

@@ -11,6 +11,14 @@ import scala.annotation.switch
 
 import dotty.tools.asm
 
+import dotty.tools.dotc.core._
+import core.NameOps._
+import core.Names.Name
+import Symbols._
+import util.Positions._, Types._, Contexts._, Constants._, Names._, NameOps._, Flags._
+import dotty.tools.dotc.ast.Trees
+import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._
+import Decorators._
 import ast.Trees._
 import core.Contexts.Context
 import core.Types.Type
@@ -22,7 +30,7 @@ import core.Symbols.{Symbol, NoSymbol}
  *  @version 1.0
  *
  */
-abstract class BCodeSyncAndTry extends BCodeBodyBuilder {
+abstract class BCodeSyncAndTry extends BCodeBodyBuilder with HasContext {
 
   /*
    * Functionality to lower `synchronized` and `try` expressions.
@@ -34,13 +42,13 @@ abstract class BCodeSyncAndTry extends BCodeBodyBuilder {
 
     def genSynchronized(tree: Apply, expectedType: BType): BType = {
       val Apply(fun, args) = tree
-      val monitor = locals.makeLocal(ObjectReference, "monitor")
+      val monitor = locals.makeLocal(ObjectReference, "monitor", defn.ObjectType)
       val monCleanup = new asm.Label
 
       // if the synchronized block returns a result, store it in a local variable.
       // Just leaving it on the stack is not valid in MSIL (stack is cleaned when leaving try-blocks).
       val hasResult = (expectedType != UNIT)
-      val monitorResult: Symbol = if (hasResult) locals.makeLocal(tpeTK(args.head), "monitorResult") else null;
+      val monitorResult: Symbol = if (hasResult) locals.makeLocal(tpeTK(args.head), "monitorResult", tree.tpe.widen) else null;
 
       /* ------ (1) pushing and entering the monitor, also keeping a reference to it in a local var. ------ */
       genLoadQualifier(fun)
@@ -219,7 +227,7 @@ abstract class BCodeSyncAndTry extends BCodeBodyBuilder {
        * please notice `tmp` has type tree.tpe, while `earlyReturnVar` has the method return type.
        * Because those two types can be different, dedicated vars are needed.
        */
-      val tmp          = if (guardResult) locals.makeLocal(tpeTK(tree), "tmp") else null;
+      val tmp          = if (guardResult) locals.makeLocal(tpeTK(tree), "tmp", tree.tpe.widen) else null;
 
       /*
        * upon early return from the try-body or one of its EHs (but not the EH-version of the finally-clause)
@@ -296,7 +304,7 @@ abstract class BCodeSyncAndTry extends BCodeBodyBuilder {
         nopIfNeeded(startTryBody)
         val finalHandler = currProgramPoint() // version of the finally-clause reached via unhandled exception.
         protect(startTryBody, finalHandler, finalHandler, null)
-        val Local(eTK, _, eIdx, _) = locals(locals.makeLocal(ThrowableReference, "exc"))
+        val Local(eTK, _, eIdx, _) = locals(locals.makeLocal(ThrowableReference, "exc", defn.ThrowableType))
         bc.store(eIdx, eTK)
         emitFinalizer(finalizer, null, isDuplicate = true)
         bc.load(eIdx, eTK)

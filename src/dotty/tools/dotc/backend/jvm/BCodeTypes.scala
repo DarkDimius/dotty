@@ -812,7 +812,7 @@ abstract class BCodeTypes extends BCodeIdiomatic {
   /*
    * must-single-thread
    */
-  final def isRemote(s: Symbol) = (s hasAnnotation definitions.RemoteAttr)
+  final def isRemote(s: Symbol) = (s hasAnnotation ctx.definitions.RemoteAttr)
 
   /*
    * Return the Java modifiers for the given symbol.
@@ -858,13 +858,14 @@ abstract class BCodeTypes extends BCodeIdiomatic {
     // avoid breaking proxy software which depends on subclassing, we do not
     // emit ACC_FINAL.
     // Nested objects won't receive ACC_FINAL in order to allow for their overriding.
+    // dd: // dd: todo what is LATE_FINAL?
 
-    val finalFlag = (
+    val finalFlag = false/*(
          (((sym.rawflags & symtab.Flags.FINAL) != 0) || isTopLevelModule(sym))
-      && !sym.enclClass.isInterface
+      && !(sym.enclosingClass.flags is Flags.Interface)
       && !sym.isClassConstructor
-      && !sym.isMutable // lazy vals and vars both
-    )
+      && !(sym.flags is Flags.Mutable) // lazy vals and vars both
+    )*/
 
     // Primitives are "abstract final" to prohibit instantiation
     // without having to provide any implementations, but that is an
@@ -873,16 +874,16 @@ abstract class BCodeTypes extends BCodeIdiomatic {
     import asm.Opcodes._
     mkFlags(
       if (privateFlag) ACC_PRIVATE else ACC_PUBLIC,
-      if (sym.isDeferred || sym.hasAbstractFlag) ACC_ABSTRACT else 0,
-      if (sym.isInterface) ACC_INTERFACE else 0,
-      if (finalFlag && !sym.hasAbstractFlag) ACC_FINAL else 0,
+      if (sym.flags is Flags.Deferred || sym.hasAbstractFlag) ACC_ABSTRACT else 0,
+      if (sym.flags is Flags.Interface) ACC_INTERFACE else 0,
+      if (finalFlag && !(sym.flags is Flags.Abstract)) ACC_FINAL else 0,
       if (sym.isStaticMember) ACC_STATIC else 0,
-      if (sym.isBridge) ACC_BRIDGE | ACC_SYNTHETIC else 0,
-      if (sym.isArtifact) ACC_SYNTHETIC else 0,
-      if (sym.isClass && !sym.isInterface) ACC_SUPER else 0,
-      if (sym.hasEnumFlag) ACC_ENUM else 0,
-      if (sym.isVarargsMethod) ACC_VARARGS else 0,
-      if (sym.hasFlag(symtab.Flags.SYNCHRONIZED)) ACC_SYNCHRONIZED else 0
+      if (sym.flags is Flags.Bridge) ACC_BRIDGE | ACC_SYNTHETIC else 0,
+      if (sym.flags is Flags.Artifact) ACC_SYNTHETIC else 0,
+      if (sym.isClass && !(sym.flags is Flags.Interface)) ACC_SUPER else 0,
+      if (sym.flags is Flags.Enum) ACC_ENUM else 0,
+      if (sym.flags is Flags.JavaVarargs) ACC_VARARGS else 0,
+      if (sym.flags is Flags.Synchronized) ACC_SYNCHRONIZED else 0
     )
   }
 
@@ -891,9 +892,9 @@ abstract class BCodeTypes extends BCodeIdiomatic {
    */
   def javaFieldFlags(sym: Symbol) = {
     javaFlags(sym) | mkFlags(
-      if (sym hasAnnotation definitions.TransientAttr) asm.Opcodes.ACC_TRANSIENT else 0,
-      if (sym hasAnnotation definitions.VolatileAttr)  asm.Opcodes.ACC_VOLATILE  else 0,
-      if (sym.isMutable) 0 else asm.Opcodes.ACC_FINAL
+      if (sym hasAnnotation ctx.definitions.TransientAttr) asm.Opcodes.ACC_TRANSIENT else 0,
+      if (sym hasAnnotation ctx.definitions.VolatileAnnot)  asm.Opcodes.ACC_VOLATILE  else 0,
+      if (sym.flags is Flags.Mutable) 0 else asm.Opcodes.ACC_FINAL
     )
   }
 

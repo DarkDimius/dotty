@@ -6,6 +6,7 @@ import io.{AbstractFile,ClassPath,JavaClassPath,MergedClassPath,DeltaClassPath}
 import ClassPath.{ JavaContext, DefaultJavaContext }
 import core.Contexts._
 import core.SymDenotations._, core.Symbols._, core.{SymbolLoader, ClassfileLoader}
+import dotty.tools.dotc.core.StdNames._
 
 class JavaPlatform extends Platform {
 
@@ -16,6 +17,10 @@ class JavaPlatform extends Platform {
       currentClassPath = Some(new PathResolver().result)
     currentClassPath.get
   }
+  def externalEquals(implicit ctx: Context): Symbol          = defn.BoxesRunTimeClass.requiredMethod(nme.equals_)
+  def externalEqualsNumNum(implicit ctx: Context): Symbol    = defn.BoxesRunTimeClass.requiredMethod(nme.equalsNumNum)
+  def externalEqualsNumChar(implicit ctx: Context): Symbol   = defn.BoxesRunTimeClass.requiredMethod(nme.equalsNumChar)
+  def externalEqualsNumObject(implicit ctx: Context): Symbol = defn.BoxesRunTimeClass.requiredMethod(nme.equalsNumObject)
 
   /** Update classpath with a substituted subentry */
   def updateClassPath(subst: Map[ClassPath, ClassPath]) =
@@ -28,7 +33,7 @@ class JavaPlatform extends Platform {
    *  to anything but other booleans, but it should be present in
    *  case this is put to other uses.
    */
-  def isMaybeBoxed(sym: ClassSymbol)(implicit ctx: Context) = {
+  def isMaybeBoxed(sym: Symbol)(implicit ctx: Context) = {
     val d = defn
     import d._
     (sym == ObjectClass) ||

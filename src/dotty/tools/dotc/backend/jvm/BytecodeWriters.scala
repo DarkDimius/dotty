@@ -10,6 +10,8 @@ import scala.language.postfixOps
 
 import java.io.{ DataOutputStream, FileOutputStream, IOException, OutputStream, File => JFile }
 import java.util.jar.Attributes.Name
+import dotty.tools.dotc.core.Symbols
+import Symbols.Symbol
 
 import dotty.tools.io._
 import core.Contexts.Context
@@ -24,7 +26,7 @@ class FileConflictException(msg: String, val file: AbstractFile) extends IOExcep
 trait BytecodeWriters {
 
   def outputDirectory(sym: Symbol)(implicit ctx: Context): AbstractFile =
-    ctx.settings.outputDirs outputDirFor enteringFlatten(sym.sourceFile)
+    ctx.settings.outputDirs outputDirFor sym.sourceFile //dd todo: in flatten
 
   /**
    * @param clsName cls.getName
@@ -42,8 +44,8 @@ trait BytecodeWriters {
     getFile(outputDirectory(sym), clsName, suffix)
 
   def factoryNonJarBytecodeWriter(implicit ctx: Context): BytecodeWriter = {
-    val emitAsmp  = ctx.settings.Ygenasmp.isSetByUser
-    val doDump    = ctx.settings.Ydumpclasses.isSetByUser
+    val emitAsmp  = !ctx.settings.Ygenasmp.isDefault
+    val doDump    = !ctx.settings.Ydumpclasses.isDefault
     (emitAsmp, doDump) match {
       case (false, false) => new ClassBytecodeWriter
       case (false, true ) => new ClassBytecodeWriter with DumpBytecodeWriter

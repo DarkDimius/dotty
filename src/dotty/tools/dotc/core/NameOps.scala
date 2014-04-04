@@ -213,6 +213,8 @@ object NameOps {
       name.expandedName(base, separator = TRAIT_SETTER_SEPARATOR)
 
     def setterName: TermName = name ++ SETTER_SUFFIX
+    def getterName: TermName = setterName.setterToGetter
+
 
     def setterToGetter: TermName = {
       val p = name.indexOfSlice(TRAIT_SETTER_SEPARATOR)

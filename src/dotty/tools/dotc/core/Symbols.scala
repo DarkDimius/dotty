@@ -341,6 +341,8 @@ object Symbols {
       denot
     }
 
+
+
     private[core] def defRunId: RunId =
       if (lastDenot == null) NoRunId else lastDenot.validFor.runId
 
@@ -353,6 +355,109 @@ object Symbols {
     final def isTerm(implicit ctx: Context): Boolean = denot.isTerm
     final def isType(implicit ctx: Context): Boolean = denot.isType
     final def isClass: Boolean = isInstanceOf[ClassSymbol]
+
+    final def hasGetter(implicit ctx: Context) = isTerm && StdNames.nme.isLocalName(name)
+
+    def getterName(implicit ctx: Context): TermName = name.asTermName.getterName
+
+    def setterName(implicit ctx: Context): TermName = name.asTermName.setterName
+    // this one in scalac has additional logic due to name expension
+
+    def getter(implicit ctx: Context): Symbol = getterIn(this.denot.owner)
+
+    final def setterIn(base: Symbol): Symbol =
+      base.info.decl(setterName).suchThat(_.flags is Flags.Accessor).symbol
+
+    def isPublic(implicit ctx: Context) = {
+      !((this.flags is Flags.Private)|| (this.flags is Flags.Protected)) && !hasAccessBoundary
+    }
+
+    /** Is this symbol a static constructor? */
+    final def isStaticConstructor: Boolean =
+      isStaticMember && isClassConstructor
+
+    def isNestedClass(implicit ctx: Context): Boolean = isClass && !isTopLevel
+
+
+    /** Is this symbol owned by a package? */
+    final def isTopLevel(implicit ctx: Context): Boolean = this.owner.flags is Flags.PackageClass
+
+    def isClassConstructor(implicit ctx: Context) = name == nme.CONSTRUCTOR
+
+    def hasAccessBoundary(implicit ctx: Context) = this.privateWithin.exists
+
+    final def getterIn(base: Symbol)(implicit ctx: Context): Symbol =
+      base.info.decl(getterName).suchThat(_.flags is Flags.Accessor).symbol
+
+    /** Is this symbol static (i.e. with no outer instance)?
+      *  Q: When exactly is a sym marked as STATIC?
+      *  A: If it's a member of a toplevel object, or of an object contained in a toplevel object, or any number of levels deep.
+      *  http://groups.google.com/group/scala-internals/browse_thread/thread/d385bcd60b08faf6
+      */
+    final def isStatic(implicit ctx: Context): Boolean = (this.flags is Flags.Static) && isStaticOwner
+
+    /** Does this symbol denote a class that defines static symbols? */
+    final def isStaticOwner(implicit ctx: Context): Boolean =
+      (this.flags is Flags.PackageClass) && ((this.flags is ModuleClass) && isStaticOwner )
+
+    /** Is this symbol a static member of its class? (i.e. needs to be implemented as a Java static?) */
+    final def isStaticMember(implicit ctx: Context): Boolean =
+      (this.flags is Flags.Static) || this.owner.isImplClass
+
+    /**  the implementation class of a trait */
+    def isImplClass(implicit ctx: Context) = false
+
+    /** Is symbol a monomorphic type?
+      *  assumption: if a type starts out as monomorphic, it will not acquire
+      *  type parameters in later phases.
+      */
+    final def isMonomorphicType =
+      isType && {
+        val info = originalInfo
+        (    (info eq null)
+          || (info.isComplete && !info.isHigherKinded)
+          )
+      }
+
+
+    /** Can this symbol only be subclassed by bottom classes? This is assessed
+      *  to be the case if it is final, and any type parameters are invariant.
+      */
+    def hasOnlyBottomSubclasses(implicit ctx: Context) = {
+      def loop(tparams: List[Symbol]): Boolean = tparams match {
+        case Nil     => true
+        case x :: xs => (x.variance == 0) && loop(xs)
+      }
+      isClass && isFinal && loop(typeParams)
+    }
+
+
+    /** Is this class symbol a subclass of that symbol,
+      *  and is this class symbol also different from Null or Nothing? */
+
+    final def isNonBottomSubClass(that: Symbol): Boolean =
+      this.isType && (this ne defn.NullClass) && (this ne defn.NothingClass) &&
+        ((this eq that) || this.isError || that.isError ||
+          this.info.baseClasses.contains(that)
+      )
+
+
+    /** Is this class symbol Null or Nothing,
+      *  and (if Null) is `that` inhabited by null?
+      *  If this is Nothing, of course, it is a
+      *  subclass of `that` by definition.
+      *
+      *  TODO - what is implied by the fact that AnyVal now has
+      *  infinitely many non-bottom subclasses, not only 9?
+      */
+    final def isBottomSubClass(that: Symbol)(implicit ctx: Context) = (
+      (this eq defn.NothingClass)
+        || (this eq defn.NullClass) && that.isClass && (that ne defn.NothingClass) && !(that isNonBottomSubClass defn.AnyValClass)
+      )
+
+    /** The bottom classes are Nothing and Null, found in Definitions. */
+
+    final def isBottomClass(implicit ctx: Context)  = (this eq defn.NullClass) || (this eq defn.NothingClass)
 
     final def asTerm(implicit ctx: Context): TermSymbol = { assert(isTerm, s"asTerm called on not-a-Term $this" ); asInstanceOf[TermSymbol] }
     final def asType(implicit ctx: Context): TypeSymbol = { assert(isType, s"isType called on not-a-Type $this"); asInstanceOf[TypeSymbol] }
@@ -480,7 +585,17 @@ object Symbols {
     final def classDenot(implicit ctx: Context): ClassDenotation =
       denot.asInstanceOf[ClassDenotation]
 
+    /** For a module class: its linked class
+      *   For a plain class: the module class of its linked module.
+      *
+      *  class Foo  <-- linkedClassOfClass -->  class Foo$
+      */
+    def linkedClassOfClass(implicit ctx: Context) = if (this.flags is Module) this.companionClass else this.companionModule.moduleClass
+
+
     private var superIdHint: Int = -1
+
+    override def isImplClass(implicit ctx: Context) = this.flags is Flags.ImplClass
 
     override def superId(implicit ctx: Context): Int = {
       val hint = superIdHint
