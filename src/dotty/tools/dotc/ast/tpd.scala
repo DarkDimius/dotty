@@ -3,11 +3,15 @@ package dotc
 package ast
 
 import core._
+import dotty.tools.dotc.transform.TypeUtils
 import util.Positions._, Types._, Contexts._, Constants._, Names._, Flags._
 import SymDenotations._, Symbols._, StdNames._, Annotations._, Trees._, Symbols._
 import CheckTrees._, Denotations._, Decorators._
 import config.Printers._
 import typer.ErrorReporting._
+import TypeUtils._
+
+import scala.annotation.tailrec
 
 /** Some creators for typed trees */
 object tpd extends Trees.Instance[Type] with TypedTreeInfo {
@@ -413,6 +417,61 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def tpes: List[Type] = xs map (_.tpe)
   }
 
+  class TypedTreeMap extends TreeMap {
+    override def transformPropagating(tree: Tree)(implicit ctx: Context): Tree = tree match {
+      case Pair(left, right) =>
+        val left1 = transform(left)
+        val right1 = transform(right)
+        val tree1 = cpy.Pair(tree, left1, right1)
+        if ((tree1 eq tree) || ((left1.tpe eq left.tpe) && (right1.tpe eq right.tpe))) tree1
+        else ta.assignType(tree1, left1, right1)
+      case Block(stats, expr) =>
+        val stats1 = transform(stats)
+        val expr1 = transform(expr)
+        val tree1 = cpy.Block(tree, stats1, expr1)
+        if ((tree1 eq tree) || (expr.tpe eq expr1.tpe)) tree1
+        else ta.assignType(tree1, stats1, expr1)
+      case If(cond, thenp, elsep) =>
+        val cond1 = transform(cond)
+        val thenp1 = transform(thenp)
+        val elsep1 = transform(elsep)
+        val tree1 = cpy.If(tree, cond1, thenp1, elsep1)
+        if ((tree1 eq tree) || ((thenp1.tpe eq thenp.tpe) && (elsep1.tpe eq elsep.tpe))) tree1
+        else ta.assignType(tree1, thenp1, elsep1)
+      case Match(selector, cases) =>
+        val selector1 = transform(selector)
+        val cases1 = transformSub(cases)
+        val tree1 = cpy.Match(tree, selector1, cases1)
+        if ((tree1 eq tree) || sameTypes(cases1, cases)) tree1
+        else ta.assignType(tree1, cases1)
+      case CaseDef(pat, guard, body) =>
+        val pat1 = transform(pat)
+        val guard1 = transform(guard)
+        val body1 = transform(body)
+        val tree1 = cpy.CaseDef(tree, pat1, guard1, body1)
+        if ((tree eq tree1) || (body.tpe eq body1.tpe)) tree1
+        else ta.assignType(tree1, body1)
+      case Try(block, handler, finalizer) =>
+        val block1 = transform(block)
+        val handler1 = transform(handler)
+        val finalizer1 = transform(finalizer)
+        val tree1 = cpy.Try(tree, transform(block), transform(handler), transform(finalizer))
+        if ((tree1 eq tree) || ((block1.tpe eq block.tpe) && (handler1.tpe eq handler.tpe))) tree
+        else ta.assignType(tree1, block1, handler1)
+      case SeqLiteral(elems) =>
+        val elems1 = transform(elems)
+        val tree1 = cpy.SeqLiteral(tree, transform(elems))
+        if ((tree1 eq tree) || ctx.erasedTypes || sameTypes(elems, elems1)) tree1
+        else ta.assignType(tree1, elems1)
+      case Annotated(annot, arg) =>
+        val annot1 = transform(annot)
+        val arg1 = transform(arg)
+        val tree1 = cpy.Annotated(tree, annot1, arg1)
+        if ((tree1 eq tree) || ((arg1.tpe eq arg.tpe) && (annot1 eq annot))) tree1
+        else ta.assignType(tree1, annot1, arg1)
+    }
+  }
+
   /** A map that applies three functions together to a tree and makes sure
    *  they are coordinated so that the result is well-typed. The functions are
    *  @param  typeMap  A function from Type to type that gets applied to the
@@ -425,7 +484,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   final class TreeTypeMap(
       val typeMap: Type => Type = IdentityTypeMap,
       val ownerMap: Symbol => Symbol = identity _,
-      val treeMap: Tree => Tree = identity _)(implicit ctx: Context) extends TreeMap {
+      val treeMap: Tree => Tree = identity _)(implicit ctx: Context) extends TypedTreeMap {
 
     override def transform(tree: tpd.Tree)(implicit ctx: Context): tpd.Tree = {
       val tree1 = treeMap(tree)
@@ -436,10 +495,20 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
           cpy.DefDef(ddef, mods, name, tparams1, vparamss1, tmap2.transform(tpt), tmap2.transform(rhs))
         case blk @ Block(stats, expr) =>
           val (tmap1, stats1) = transformDefs(stats)
-          cpy.Block(blk, stats1, tmap1.transform(expr))
+          val expr1 = tmap1.transform(expr)
+          val tree1 = cpy.Block(blk, stats1, expr1)
+
+          if ((tree1 eq blk) || (expr.tpe eq expr1.tpe)) tree1
+          else ta.assignType(tree1, stats1, expr1)
         case cdef @ CaseDef(pat, guard, rhs) =>
           val tmap = withMappedSyms(patVars(pat))
-          cpy.CaseDef(cdef, tmap.transform(pat), tmap.transform(guard), tmap.transform(rhs))
+          val pat1 = tmap.transform(pat)
+          val guard1 = tmap.transform(guard)
+          val rhs1 = tmap.transform(rhs)
+          val tree1 = cpy.CaseDef(tree, pat1, guard1, rhs1)
+
+          if ((tree eq tree1) || (rhs.tpe eq rhs1.tpe)) tree1
+          else ta.assignType(tree1, rhs1)
         case tree1 =>
           super.transform(tree1)
       }

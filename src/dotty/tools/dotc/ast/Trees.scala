@@ -707,6 +707,7 @@ object Trees {
     type ThisTree[-T >: Untyped] = DefDef[T]
     def withName(name: Name)(implicit ctx: Context): untpd.DefDef = untpd.cpy.DefDef(this, mods, name.toTermName, tparams, vparamss, tpt, rhs)
     assert(tpt != genericEmptyTree)
+    assert(!rhs.isInstanceOf[DefDef[_]])
   }
 
   /** mods class name template     or
@@ -1096,6 +1097,26 @@ object Trees {
 
     abstract class TreeMap(val cpy: TreeCopier = inst.cpy) {
 
+      /** This method is overriden in tpd.TypedTreeMap to allow type propagation from subtrees */
+      def transformPropagating(tree: Tree)(implicit ctx: Context): Tree = tree match {
+        case Pair(left, right) =>
+          cpy.Pair(tree, transform(left), transform(right))
+        case Block(stats, expr) =>
+          cpy.Block(tree, transformStats(stats), transform(expr))
+        case If(cond, thenp, elsep) =>
+          cpy.If(tree, transform(cond), transform(thenp), transform(elsep))
+        case Match(selector, cases) =>
+          cpy.Match(tree, transform(selector), transformSub(cases))
+        case CaseDef(pat, guard, body) =>
+          cpy.CaseDef(tree, transform(pat), transform(guard), transform(body))
+        case Try(block, handler, finalizer) =>
+          cpy.Try(tree, transform(block), transform(handler), transform(finalizer))
+        case SeqLiteral(elems) =>
+          cpy.SeqLiteral(tree, transform(elems))
+        case Annotated(annot, arg) =>
+          cpy.Annotated(tree, transform(annot), transform(arg))
+      }
+
       def transform(tree: Tree)(implicit ctx: Context): Tree = tree match {
         case Ident(name) =>
           tree
@@ -1109,36 +1130,20 @@ object Trees {
           cpy.Apply(tree, transform(fun), transform(args))
         case TypeApply(fun, args) =>
           cpy.TypeApply(tree, transform(fun), transform(args))
-        case Literal(const) =>
-          tree
         case New(tpt) =>
           cpy.New(tree, transform(tpt))
-        case Pair(left, right) =>
-          cpy.Pair(tree, transform(left), transform(right))
         case Typed(expr, tpt) =>
           cpy.Typed(tree, transform(expr), transform(tpt))
         case NamedArg(name, arg) =>
           cpy.NamedArg(tree, name, transform(arg))
         case Assign(lhs, rhs) =>
           cpy.Assign(tree, transform(lhs), transform(rhs))
-        case Block(stats, expr) =>
-          cpy.Block(tree, transformStats(stats), transform(expr))
-        case If(cond, thenp, elsep) =>
-          cpy.If(tree, transform(cond), transform(thenp), transform(elsep))
         case Closure(env, meth, tpt) =>
           cpy.Closure(tree, transform(env), transform(meth), transform(tpt))
-        case Match(selector, cases) =>
-          cpy.Match(tree, transform(selector), transformSub(cases))
-        case CaseDef(pat, guard, body) =>
-          cpy.CaseDef(tree, transform(pat), transform(guard), transform(body))
         case Return(expr, from) =>
           cpy.Return(tree, transform(expr), transformSub(from))
-        case Try(block, handler, finalizer) =>
-          cpy.Try(tree, transform(block), transform(handler), transform(finalizer))
         case Throw(expr) =>
           cpy.Throw(tree, transform(expr))
-        case SeqLiteral(elems) =>
-          cpy.SeqLiteral(tree, transform(elems))
         case TypeTree(original) =>
           tree
         case SingletonTypeTree(ref) =>
@@ -1177,11 +1182,12 @@ object Trees {
           cpy.Import(tree, transform(expr), selectors)
         case PackageDef(pid, stats) =>
           cpy.PackageDef(tree, transformSub(pid), transformStats(stats))
-        case Annotated(annot, arg) =>
-          cpy.Annotated(tree, transform(annot), transform(arg))
         case Thicket(trees) =>
           val trees1 = transform(trees)
           if (trees1 eq trees) tree else Thicket(trees1)
+        case Literal(const) =>
+          tree
+        case _ => transformPropagating(tree)
       }
       def transformStats(trees: List[Tree])(implicit ctx: Context): List[Tree] =
         transform(trees)
