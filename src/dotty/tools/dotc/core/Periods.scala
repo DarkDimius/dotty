@@ -52,7 +52,7 @@ object Periods {
    *
    *     // Dmitry: sign == 0 isn't actually always true, in some cases phaseId == -1 is used for shifts, that easily creates code < 0
    */
-  class Period(val code: Int) extends AnyVal {
+  class Period(val code: Int) {
 
     /** The run identifier of this period. */
     def runId: RunId = code >>> (PhaseWidth * 2)
@@ -153,7 +153,7 @@ object Periods {
   final val FirstPhaseId = 1
 
   /** The number of bits needed to encode a phase identifier. */
-  final val PhaseWidth = 5
+  final val PhaseWidth = 6
   final val PhaseMask = (1 << PhaseWidth) - 1
   final val MaxPossiblePhaseId = PhaseMask
 }

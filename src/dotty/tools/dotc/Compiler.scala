@@ -59,6 +59,7 @@ class Compiler {
            new Literalize,
            new Getters,
            new ResolveSuper),
+      List(new TypeSpecializer),
       List(new Erasure),
       List(new Mixin,
            new Memoize,

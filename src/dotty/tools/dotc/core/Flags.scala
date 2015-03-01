@@ -12,7 +12,7 @@ object Flags {
    *  that has the intersection of the applicability to terms/types
    *  of the two flag sets. It is checked that the intersection is not empty.
    */
-  case class FlagSet(val bits: Long) extends AnyVal {
+  case class FlagSet(val bits: Long) {
 
     /** The union of this flag set and the given flag set
      */
