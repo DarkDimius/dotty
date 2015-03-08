@@ -32,22 +32,22 @@ class TypeSpecializer extends MiniPhaseTransform {
     
     tree.tpe.widen match {
         
-      case poly: PolyType => { // PolyType is the type of methods with at least one argument
+      case poly: PolyType => {
 
-        val pparams = poly.paramNames.zipWithIndex.map(x => new PolyParam(poly, x._2).asInstanceOf[Type])
-
-        def tpMap(tp: Type): Type = rewireType(tp).substDealias(List(tree.symbol.owner), pparams)
-
-        val newNames = specialisedTypes.values.map(suffix => (tree.name + suffix).toTermName)
-
-        val newSyms = newNames.map(name => ctx.newSymbol(tree.symbol.owner, name, tree.symbol.flags | Flags.Synthetic, poly.instantiate(specialisedTypes.keys.toList)))
-
-        val ttmaps = newSyms.map(newSym => new TreeTypeMap(typeMap = tpMap, oldOwners = List(tree.symbol), newOwners = List(newSym))).toList
-
-        val ss = for (ttmap <- ttmaps) yield ttmap apply tree
-        Thicket(tree::ss) // Could there be an issue when casting `DefDef`s into `Tree`s ? Tests seem to suggest it.
+        val pparams = (0 until poly.paramNames.length).toList map (PolyParam(poly, _))
+        val newNames = specialisedTypes.values.map(suffix => (tree.name + suffix).toTermName) // or `toTypeName` ?
+        val nameToType = specialisedTypes map (x => (tree.name + x._2).toTermName -> x._1)
+        val newSyms = newNames.map(ctx.newSymbol(tree.symbol.owner, _, tree.symbol.flags | Flags.Synthetic, poly.instantiate(specialisedTypes.keys.toList))) //  TODO is the arg to instantiate correct ?
+        val ttmaps = newSyms.map(newSymbol =>
+          new TreeTypeMap(
+            typeMap = rewireType(_).substDealias(pparams map (_.typeSymbol), List(nameToType(newSymbol.name))), // How about `pparams map (_.binder.paramNames)` for the 1st argument ?
+            oldOwners = List(tree.symbol),
+            newOwners = List(newSymbol)
+          )
+        ).toList
+        val ss = ttmaps map (_ apply tree)
+        Thicket(tree::ss) // Could there be an issue when casting `DefDef`s into `Tree`s ?
       }
-        
       case _ => tree
     }
   }
