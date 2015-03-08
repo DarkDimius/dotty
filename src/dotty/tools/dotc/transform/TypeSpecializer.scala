@@ -7,10 +7,13 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Types._
 import dotty.tools.dotc.transform.TreeTransforms.{TransformerInfo, MiniPhaseTransform}
 import dotty.tools.dotc.core.Decorators._
+import scala.collection.mutable.{ListBuffer, ArrayBuffer}
 
 class TypeSpecializer extends MiniPhaseTransform {
   
   override def phaseName = "Type Specializer"
+
+  final val maxTparamsToSpecialize = 2
   
   private final def specialisedTypes(implicit ctx: Context) =
     Map(ctx.definitions.ByteType -> "$mcB$sp",
@@ -32,21 +35,52 @@ class TypeSpecializer extends MiniPhaseTransform {
     
     tree.tpe.widen match {
         
-      case poly: PolyType => {
+      case poly: PolyType if !(tree.symbol.isPrimaryConstructor
+                               || (tree.symbol is Flags.Label)
+                               || (tree.tparams.length > maxTparamsToSpecialize)) => {
+        val origTParams = tree.tparams.map(_.symbol)
+        val origVParams = tree.vparamss.flatten.map(_.symbol)
+        println(s"specializing ${tree.symbol} for Tparams: ${origTParams.length}")
 
-        val pparams = (0 until poly.paramNames.length).toList map (PolyParam(poly, _))
-        val newNames = specialisedTypes.values.map(suffix => (tree.name + suffix).toTermName) // or `toTypeName` ?
-        val nameToType = specialisedTypes map (x => (tree.name + x._2).toTermName -> x._1)
-        val newSyms = newNames.map(ctx.newSymbol(tree.symbol.owner, _, tree.symbol.flags | Flags.Synthetic, poly.instantiate(specialisedTypes.keys.toList))) //  TODO is the arg to instantiate correct ?
-        val ttmaps = newSyms.map(newSymbol =>
-          new TreeTypeMap(
-            typeMap = rewireType(_).substDealias(pparams map (_.typeSymbol), List(nameToType(newSymbol.name))), // How about `pparams map (_.binder.paramNames)` for the 1st argument ?
-            oldOwners = List(tree.symbol),
-            newOwners = List(newSymbol)
-          )
-        ).toList
-        val ss = ttmaps map (_ apply tree)
-        Thicket(tree::ss) // Could there be an issue when casting `DefDef`s into `Tree`s ?
+        def specialize(instatiations: collection.mutable.ListBuffer[Type], names: collection.mutable.ArrayBuffer[String]): Tree = {
+
+          val newSym = ctx.newSymbol(tree.symbol.owner, (tree.name + names.mkString).toTermName, tree.symbol.flags | Flags.Synthetic, poly.instantiate(instatiations.toList))
+          polyDefDef(newSym, { tparams => vparams => {
+            assert(tparams.isEmpty)
+            new TreeTypeMap(
+              typeMap = _
+                .substDealias(origTParams, instatiations.toList)
+                .subst(origVParams, vparams.flatten.map(_.tpe)),
+              oldOwners = tree.symbol :: Nil,
+              newOwners = newSym :: Nil
+            ).transform(tree.rhs)
+          }
+          })
+        }
+
+        def generateSpecializations(remainingTParams: List[TypeDef])
+                                  (instatiated: ArrayBuffer[TypeDef], instatiations: ListBuffer[Type],
+                                    names: ArrayBuffer[String]): Iterable[Tree] = {
+          if (remainingTParams.nonEmpty) {
+            val typeToSpecialize = remainingTParams.head
+            specialisedTypes.flatMap { tpnme =>
+              val tpe = tpnme._1
+              val nme = tpnme._2
+              instatiated.+=(typeToSpecialize)
+              instatiations.+=(tpe)
+              names.+=(nme)
+              val r = generateSpecializations(remainingTParams.tail)(instatiated, instatiations, names)
+              instatiated.drop(1)
+              instatiations.drop(1)
+              names.drop(1)
+              r
+            }
+          } else
+            List(specialize(instatiations, names))
+        }
+
+
+        Thicket(tree :: generateSpecializations(tree.tparams)(ArrayBuffer.empty, ListBuffer.empty, ArrayBuffer.empty).toList)
       }
       case _ => tree
     }
